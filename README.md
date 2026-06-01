@@ -4,6 +4,7 @@
 
 <p>
   <a href="https://github.com/pepperonas/repo2viz/releases"><img alt="Version" src="https://img.shields.io/badge/version-2.1.0-d0bcff"></a>
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-yellow"></a>
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white">
   <img alt="Dependencies" src="https://img.shields.io/badge/dependencies-stdlib%20%2B%20git-2ea44f">
   <img alt="No build" src="https://img.shields.io/badge/build-none-success">
@@ -255,4 +256,4 @@ Sie erscheint außerdem im Footer jeder generierten HTML. Alle Änderungen sind 
 
 ## Lizenz
 
-Privates Tooling — keine Lizenz festgelegt.
+[MIT](LICENSE) © 2026 Martin Pfeffer ([pepperonas](https://github.com/pepperonas))
