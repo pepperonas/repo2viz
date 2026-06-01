@@ -5,8 +5,9 @@
 > Repository-Aktivität auf einen Blick — als eigenständige, interaktive HTML-Datei.
 
 <p>
-  <a href="https://github.com/pepperonas/repo2viz/releases"><img alt="Version" src="https://img.shields.io/badge/version-2.1.0-d0bcff"></a>
+  <a href="https://github.com/pepperonas/repo2viz/releases"><img alt="Version" src="https://img.shields.io/badge/version-2.2.0-d0bcff"></a>
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-yellow"></a>
+  <a href="https://github.com/pepperonas/repo2viz/releases/latest"><img alt="Downloads" src="https://img.shields.io/github/downloads/pepperonas/repo2viz/total?label=downloads&color=blueviolet"></a>
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white">
   <img alt="Dependencies" src="https://img.shields.io/badge/dependencies-stdlib%20%2B%20git-2ea44f">
   <img alt="No build" src="https://img.shields.io/badge/build-none-success">
@@ -15,6 +16,7 @@
   <img alt="GitHub" src="https://img.shields.io/badge/source-GitHub-181717?logo=github&logoColor=white">
   <img alt="Azure DevOps" src="https://img.shields.io/badge/source-Azure%20DevOps-0078D7?logo=azuredevops&logoColor=white">
   <img alt="Chart.js" src="https://img.shields.io/badge/charts-Chart.js-FF6384?logo=chartdotjs&logoColor=white">
+  <img alt="PySide6" src="https://img.shields.io/badge/GUI-PySide6%20%2F%20Qt%206-41CD52?logo=qt&logoColor=white">
   <img alt="Material Design 3" src="https://img.shields.io/badge/design-Material%203-6750A4?logo=materialdesign&logoColor=white">
   <img alt="Mobile ready" src="https://img.shields.io/badge/mobile-ready-34d399">
   <br>
@@ -180,12 +182,45 @@ Das Layout ist vollständig responsiv (hier ein iPhone-Viewport):
 
 ---
 
+## GUI (Desktop-App)
+
+Wer keine Kommandozeile nutzen möchte: Es gibt eine **Desktop-App** (PySide6 / Qt 6)
+im selben Material-3-Dark-Design — URL eingeben, „Report generieren" klicken, fertig.
+
+![repo2viz GUI](screenshots/gui.png)
+
+### Fertige Pakete herunterladen
+
+Vorgefertigte Builds für alle Betriebssysteme gibt es in den
+**[Releases](https://github.com/pepperonas/repo2viz/releases/latest)**:
+
+| OS | Paket | Nutzung |
+|----|-------|---------|
+| 🍎 **macOS** | `repo2viz-gui-macos.zip` | entpacken → `repo2viz-gui.app` starten |
+| 🪟 **Windows** | `repo2viz-gui-windows-x86_64.zip` | entpacken → `repo2viz-gui.exe` starten |
+| 🐧 **Linux** | `repo2viz-gui-linux-x86_64.tar.gz` | entpacken → `./repo2viz-gui` ausführen |
+
+> **Laufzeit-Voraussetzung:** `git` muss installiert und im `PATH` sein. Die Pakete
+> sind unsigniert — unter macOS ggf. über *Rechtsklick → Öffnen* bzw.
+> *Systemeinstellungen → Datenschutz & Sicherheit* freigeben.
+
+### Aus dem Quellcode starten
+
+```bash
+pip install -r requirements-gui.txt   # PySide6
+python3 repo2viz_gui.py
+```
+
+---
+
 ## Voraussetzungen
 
-* **Python 3.11+** — nur Standardbibliothek, keine Pakete zu installieren
+* **Python 3.11+** — die CLI nutzt nur die Standardbibliothek, keine Pakete zu installieren
 * **git** im `PATH`
 * **Internet beim Öffnen der HTML** — Chart.js + Matrix- und Annotation-Plugin werden per
   CDN geladen (mit verifizierten SRI-Integritäts-Hashes als Schutz gegen CDN-Manipulation)
+* **nur für die GUI:** [PySide6](https://pypi.org/project/PySide6/) (`pip install -r requirements-gui.txt`)
+  — die fertigen Release-Pakete bringen alles mit, dann ist nichts zu installieren
 
 ---
 

@@ -5,6 +5,22 @@ Alle nennenswerten Änderungen an diesem Projekt werden hier dokumentiert.
 Das Format orientiert sich an [Keep a Changelog](https://keepachangelog.com/de/1.1.0/),
 und das Projekt folgt [Semantic Versioning](https://semver.org/lang/de/).
 
+## [2.2.0] – 2026-06-01
+
+### Hinzugefügt
+- **GUI-Desktop-App** (`repo2viz_gui.py`, PySide6 / Qt 6) im Material-3-Dark-Design:
+  URL-Eingabe mit Provider-Erkennung, Token-/Ausgabe-Felder, Live-Log, Fortschritts-
+  anzeige und „Im Browser öffnen" — die Generierung läuft in einem Worker-Thread.
+- **Vorgefertigte Download-Pakete** für macOS, Windows und Linux über die GitHub-
+  Releases (gebaut via PyInstaller in GitHub Actions, `.github/workflows/release.yml`).
+- Wiederverwendbare API `generate_report(url, …, log=callback)` in `repo2viz.py`,
+  die von CLI und GUI gemeinsam genutzt wird.
+- `requirements-gui.txt` (PySide6).
+
+### Geändert
+- `clone_repo()` gibt keine Meldung mehr direkt aus; Fortschritt läuft über den
+  `log`-Callback (saubere Trennung für die GUI).
+
 ## [2.1.0] – 2026-06-01
 
 ### Hinzugefügt
@@ -45,6 +61,7 @@ und das Projekt folgt [Semantic Versioning](https://semver.org/lang/de/).
 - Umschaltbare Zeiträume (30 T / 90 T / 180 T / 1 Jahr / Gesamt), clientseitig.
 - Material-3-Expressive-Dark-Design, Chart.js via CDN mit SRI-Hashes.
 
+[2.2.0]: https://github.com/pepperonas/repo2viz/releases/tag/v2.2.0
 [2.1.0]: https://example.com/repo2viz/releases/tag/v2.1.0
 [2.0.0]: https://example.com/repo2viz/releases/tag/v2.0.0
 [1.0.0]: https://example.com/repo2viz/releases/tag/v1.0.0

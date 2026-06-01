@@ -42,7 +42,7 @@ import tempfile
 from collections import defaultdict
 from urllib.parse import quote, urlparse
 
-__version__ = "2.1.0"
+__version__ = "2.2.0"
 
 # Datensatz-Trenner (ASCII-Steuerzeichen, kommen in git-Metadaten praktisch nie vor)
 REC = "\x1e"   # record separator
@@ -112,7 +112,6 @@ def repo_display_name(url: str) -> str:
 #  Clone & git-Log-Parsing
 # --------------------------------------------------------------------------- #
 def clone_repo(clone_url: str, dest: str) -> None:
-    print("  -> Klone Repository (bare) ...", flush=True)
     res = subprocess.run(
         ["git", "clone", "--bare", "--quiet", clone_url, dest],
         capture_output=True, text=True,
@@ -1276,7 +1275,72 @@ render(0);
 
 
 # --------------------------------------------------------------------------- #
-#  Main
+#  Öffentliche API (von CLI und GUI genutzt)
+# --------------------------------------------------------------------------- #
+def default_output_name(name: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-") + "-activity.html"
+
+
+def generate_report(url: str, output: str | None = None, token: str | None = None,
+                    keep_clone: bool = False, log=lambda _m: None) -> dict:
+    """Klont das Repo, analysiert die Historie und schreibt die HTML-Datei.
+
+    `log` ist ein Callback `(str) -> None` für Fortschrittsmeldungen (z. B. print
+    oder ein Qt-Signal). Gibt ein Ergebnis-Dict zurück (output, commits, authors, tags).
+    """
+    provider = detect_provider(url)
+    tok = resolve_token(provider, token)
+    clone_url = build_clone_url(url, provider, tok)
+    name = repo_display_name(url)
+
+    log(f"Repository : {name}")
+    log(f"Provider   : {provider}{'  (Token aktiv)' if tok else ''}")
+
+    tmp = tempfile.mkdtemp(prefix="repo2viz-")
+    repo_dir = os.path.join(tmp, "repo.git")
+    try:
+        log("Klone Repository (bare) …")
+        clone_repo(clone_url, repo_dir)
+        log("Analysiere git-Historie …")
+        raw = git_log(repo_dir)
+        data = parse_log(raw)
+        data["tags"] = git_tags(repo_dir)
+        if not data["commits"]:
+            log("WARNUNG: Keine Commits gefunden.")
+        meta = {
+            "name": name,
+            "url": url,
+            "provider": provider,
+            "merges": False,
+            "version": __version__,
+            "generated": dt.datetime.now().strftime("%Y-%m-%d %H:%M"),
+        }
+        log("Erzeuge HTML …")
+        html = build_html(data, meta)
+    finally:
+        if keep_clone:
+            log(f"Clone behalten: {repo_dir}")
+        else:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    out = os.path.abspath(output or default_output_name(name))
+    with open(out, "w", encoding="utf-8") as f:
+        f.write(html)
+
+    result = {
+        "output": out,
+        "name": name,
+        "provider": provider,
+        "commits": len(data["commits"]),
+        "authors": len(data["authors"]),
+        "tags": len(data.get("tags", [])),
+    }
+    log(f"{result['commits']} Commits · {result['authors']} Contributors · {result['tags']} Tags")
+    return result
+
+
+# --------------------------------------------------------------------------- #
+#  Main (CLI)
 # --------------------------------------------------------------------------- #
 def main():
     ap = argparse.ArgumentParser(
@@ -1288,48 +1352,9 @@ def main():
     ap.add_argument("--version", action="version", version=f"repo2viz {__version__}")
     args = ap.parse_args()
 
-    provider = detect_provider(args.url)
-    token = resolve_token(provider, args.token)
-    clone_url = build_clone_url(args.url, provider, token)
-    name = repo_display_name(args.url)
-
-    print(f"Repository : {name}")
-    print(f"Provider   : {provider}{'  (Token aktiv)' if token else ''}")
-
-    tmp = tempfile.mkdtemp(prefix="repo2viz-")
-    repo_dir = os.path.join(tmp, "repo.git")
-    try:
-        clone_repo(clone_url, repo_dir)
-        print("  -> Analysiere git-Historie ...", flush=True)
-        raw = git_log(repo_dir)
-        data = parse_log(raw)
-        data["tags"] = git_tags(repo_dir)
-        if not data["commits"]:
-            print("WARNUNG: Keine Commits gefunden.", file=sys.stderr)
-        meta = {
-            "name": name,
-            "url": args.url,
-            "provider": provider,
-            "merges": False,
-            "version": __version__,
-            "generated": dt.datetime.now().strftime("%Y-%m-%d %H:%M"),
-        }
-        html = build_html(data, meta)
-    finally:
-        if args.keep_clone:
-            print(f"  -> Clone behalten: {repo_dir}")
-        else:
-            shutil.rmtree(tmp, ignore_errors=True)
-
-    out = args.output or re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-") + "-activity.html"
-    with open(out, "w", encoding="utf-8") as f:
-        f.write(html)
-
-    n_commits = len(data["commits"])
-    n_authors = len(data["authors"])
-    n_tags = len(data.get("tags", []))
-    print(f"  -> {n_commits} Commits · {n_authors} Contributors · {n_tags} Tags")
-    print(f"\n✓ HTML erzeugt: {os.path.abspath(out)}")
+    res = generate_report(args.url, args.output, args.token, args.keep_clone,
+                          log=lambda m: print("  -> " + m if not m.startswith(("Repository", "Provider")) else m, flush=True))
+    print(f"\n✓ HTML erzeugt: {res['output']}")
 
 
 if __name__ == "__main__":

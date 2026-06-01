@@ -1,0 +1,73 @@
+name: Release
+
+# Baut bei einem Versions-Tag (z. B. v2.2.0) die GUI-Desktop-Pakete für
+# macOS, Windows und Linux und hängt sie an den GitHub-Release.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset: repo2viz-gui-linux-x86_64.tar.gz
+          - os: windows-latest
+            asset: repo2viz-gui-windows-x86_64.zip
+          - os: macos-latest
+            asset: repo2viz-gui-macos.zip
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install PySide6 pyinstaller
+
+      - name: Build (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          pyinstaller --noconfirm --onefile --name repo2viz-gui repo2viz_gui.py
+          cd dist && tar -czf "../${{ matrix.asset }}" repo2viz-gui
+
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          pyinstaller --noconfirm --onefile --windowed --name repo2viz-gui repo2viz_gui.py
+          Compress-Archive -Path dist/repo2viz-gui.exe -DestinationPath "${{ matrix.asset }}"
+
+      - name: Build (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          pyinstaller --noconfirm --windowed --name repo2viz-gui repo2viz_gui.py
+          cd dist && zip -r "../${{ matrix.asset }}" repo2viz-gui.app
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.asset }}
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          body: |
+            Desktop-Pakete (GUI) für repo2viz.
+
+            | OS | Datei |
+            |----|-------|
+            | macOS | `repo2viz-gui-macos.zip` (entpacken → `repo2viz-gui.app`) |
+            | Windows | `repo2viz-gui-windows-x86_64.zip` (entpacken → `repo2viz-gui.exe`) |
+            | Linux | `repo2viz-gui-linux-x86_64.tar.gz` (entpacken → `./repo2viz-gui`) |
+
+            **Laufzeit-Voraussetzung:** `git` muss installiert und im PATH sein.
