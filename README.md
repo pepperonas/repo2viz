@@ -164,16 +164,13 @@ Wochentag × Tageszeit (links) und das radiale 24-Stunden-Zifferblatt der Stoßz
 |---|---|
 | ![Heatmap](screenshots/heatmap.png) | ![Stoßzeiten](screenshots/clock.png) |
 
-### Tagesdetail
-Klick auf eine Kalenderzelle öffnet die Detailansicht eines einzelnen Tages —
-Stundenverteilung, Churn und Beteiligte.
+### Tagesdetail & Contribution-Kalender
+Klick auf eine Kalenderzelle (rechts) öffnet das Tagesdetail (links): Stundenverteilung,
+Churn und Beteiligte eines einzelnen Tages.
 
-![Tagesdetail](screenshots/daydetail.png)
-
-### Contribution-Kalender
-Tägliche Commits der letzten 12 Monate (GitHub-Style), klickbar für das Tagesdetail.
-
-![Contribution-Kalender](screenshots/calendar.png)
+| Tagesdetail | Contribution-Kalender |
+|---|---|
+| ![Tagesdetail](screenshots/daydetail.png) | ![Contribution-Kalender](screenshots/calendar.png) |
 
 ### Commit-Typen & Hotspots
 Conventional-Commit-Verteilung und Dateien mit hohem Wissensrisiko (oft geändert, wenige Autoren).
@@ -183,9 +180,9 @@ Conventional-Commit-Verteilung und Dateien mit hohem Wissensrisiko (oft geänder
 | ![Commit-Typen](screenshots/commit-types.png) | ![Hotspots](screenshots/hotspots.png) |
 
 ### Mobile
-Das Layout ist vollständig responsiv (hier ein iPhone-Viewport):
+Vollständig responsiv — inklusive View-Umschalter, Filter und 2-spaltigen KPIs (iPhone-Viewport):
 
-<p align="center"><img src="screenshots/mobile.png" alt="Mobile-Ansicht" width="320"></p>
+<p align="center"><img src="screenshots/mobile.png" alt="Mobile-Ansicht" width="300"></p>
 
 ---
 
