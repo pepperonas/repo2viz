@@ -1,3 +1,5 @@
+<p align="center"><img src="screenshots/banner.png" alt="repo2viz" width="100%"></p>
+
 # repo2viz
 
 > Repository-Aktivität auf einen Blick — als eigenständige, interaktive HTML-Datei.
