@@ -5,6 +5,24 @@ Alle nennenswerten Änderungen an diesem Projekt werden hier dokumentiert.
 Das Format orientiert sich an [Keep a Changelog](https://keepachangelog.com/de/1.1.0/),
 und das Projekt folgt [Semantic Versioning](https://semver.org/lang/de/).
 
+## [2.4.0] – 2026-06-01
+
+### Hinzugefügt
+- **DORA- & Qualitäts-Metriken** (alle clone-only, keine neue Abhängigkeit):
+  - **Rework-Rate / Change-Failure-Proxy** — Anteil Nicht-Fix-Commits, denen binnen 14 Tagen
+    ein Fix auf derselben Datei folgt (monatlicher Trend + Gesamtquote).
+  - **Defekt-anfällige Module** — Dateien mit den meisten `fix:`-Commits.
+  - **Test-Begleitung** — monatliche Quote des Churns in Test-/Spec-Dateien.
+  - **Verwaistes Wissen** — Dateien, deren letzter Autor seit > 180 Tagen inaktiv ist
+    (Code ohne aktiven Betreuer).
+  - **Release-Kadenz & Time-to-release** — Releases je Quartal, Median-Abstand zwischen
+    Tags und Median-Zeit Commit → nächster Tag (DORA-Deployment-Frequency-Proxy).
+- **Throughput-Forecast (Monte-Carlo)** im PO-Dashboard — projiziert den Liefer-Durchsatz
+  der nächsten 8 Wochen (50 % / 85 %-Konfidenz) aus dem historischen Wochentempo.
+
+Damit sind die vier DORA-Metriken praktisch abgedeckt (Lead Time, Deployment Frequency,
+Change Failure Rate, Rework als MTTR-Näherung).
+
 ## [2.3.0] – 2026-06-01
 
 ### Hinzugefügt
@@ -88,6 +106,7 @@ und das Projekt folgt [Semantic Versioning](https://semver.org/lang/de/).
 - Umschaltbare Zeiträume (30 T / 90 T / 180 T / 1 Jahr / Gesamt), clientseitig.
 - Material-3-Expressive-Dark-Design, Chart.js via CDN mit SRI-Hashes.
 
+[2.4.0]: https://github.com/pepperonas/repo2viz/releases/tag/v2.4.0
 [2.3.0]: https://github.com/pepperonas/repo2viz/releases/tag/v2.3.0
 [2.2.0]: https://github.com/pepperonas/repo2viz/releases/tag/v2.2.0
 [2.1.0]: https://example.com/repo2viz/releases/tag/v2.1.0

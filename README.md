@@ -5,7 +5,7 @@
 > Repository-Aktivität auf einen Blick — als eigenständige, interaktive HTML-Datei.
 
 <p>
-  <a href="https://github.com/pepperonas/repo2viz/releases"><img alt="Version" src="https://img.shields.io/badge/version-2.3.0-d0bcff"></a>
+  <a href="https://github.com/pepperonas/repo2viz/releases"><img alt="Version" src="https://img.shields.io/badge/version-2.4.0-d0bcff"></a>
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-yellow"></a>
   <a href="https://github.com/pepperonas/repo2viz/releases/latest"><img alt="Downloads" src="https://img.shields.io/github/downloads/pepperonas/repo2viz/total?label=downloads&color=blueviolet"></a>
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white">
@@ -18,6 +18,7 @@
   <img alt="Chart.js" src="https://img.shields.io/badge/charts-Chart.js-FF6384?logo=chartdotjs&logoColor=white">
   <img alt="PySide6" src="https://img.shields.io/badge/GUI-PySide6%20%2F%20Qt%206-41CD52?logo=qt&logoColor=white">
   <img alt="Azure DevOps" src="https://img.shields.io/badge/PO%20Dashboard-Azure%20Work%20Items-0078D7?logo=azuredevops&logoColor=white">
+  <img alt="DORA metrics" src="https://img.shields.io/badge/metrics-DORA-7ddfa0">
   <img alt="Material Design 3" src="https://img.shields.io/badge/design-Material%203-6750A4?logo=materialdesign&logoColor=white">
   <img alt="Mobile ready" src="https://img.shields.io/badge/mobile-ready-34d399">
   <br>
@@ -138,6 +139,7 @@ etwaigen Fehlermeldungen maskiert.
 | ⏱️ **Zeitraum-Umschaltung** | 30 T / 90 T / 180 T / 1 Jahr / Gesamt — clientseitig, sofort |
 | 📱 **Mobile-Ready** | Responsives Layout für Smartphone & Tablet |
 | 📋 **PO-/Delivery-Dashboard** | Eigener View, der Engineering-Daten in PO-Sprache übersetzt — mit Azure-DevOps-Work-Item-Anreicherung ([Details](#po--delivery-dashboard)) |
+| 📐 **DORA & Qualität** | Rework-Rate (Change-Failure), Defekt-Module, Test-Begleitung, verwaistes Wissen, Release-Kadenz/Time-to-release + Monte-Carlo-Forecast ([Details](#dora--qualität)) |
 | 🔐 **GitHub & Azure DevOps** | Provider-Auto-Erkennung, Token-Auth für private Repos |
 
 ---
@@ -278,6 +280,33 @@ Fehlt etwas, stürzt nichts ab — alle Felder werden defensiv behandelt.
 | `--ado-api-version` | Azure-DevOps-REST-api-version (Default `7.1`; on-prem ggf. `6.0`/`5.0`). |
 | `--anonymize` | Contributor-Namen im HTML pseudonymisieren — sinnvoll, da PO-Dashboards breiter geteilt werden (DSGVO). |
 | `--no-po` | PO-Dashboard nicht erzeugen. |
+
+---
+
+## DORA & Qualität
+
+Zusätzliche Metriken, die Liefer- und Codequalität messbar machen — **alle clone-only**
+(keine API, kein Token nötig). Im Engineering-View ergänzen sie die bestehenden Charts,
+ein Forecast liegt im PO-View.
+
+![Rework-Rate](screenshots/dora-rework.png)
+
+| Metrik | Was sie misst | Wie sie ermittelt wird |
+|--------|---------------|------------------------|
+| **Rework-Rate** (Change-Failure-Proxy) | Wie oft frisch Geliefertes sofort nachgebessert wird | Anteil der **Nicht-Fix-Commits**, denen binnen **14 Tagen** ein `fix:`-Commit auf **derselben Datei** folgt (monatlicher Trend + Gesamtquote). |
+| **Defekt-anfällige Module** | Wo sich Bugs sammeln | Dateien mit den meisten `fix:`-Commits (≥ 2). |
+| **Test-Begleitung** | Ob Testabdeckung mitwächst | Monatliche Quote des Churns in Test-/Spec-Dateien (`tests/`, `*.test.*`, `*_spec.*` …) am Gesamt-Churn. |
+| **Verwaistes Wissen** | Code ohne aktiven Betreuer | Dateien, deren **letzter** Autor seit **> 180 Tagen** keinen Commit mehr gemacht hat. |
+| **Release-Kadenz & Time-to-release** | Wie oft & wie schnell wir ausliefern | Releases je Quartal, Median-Abstand zwischen Tags, Median-Zeit Commit → nächster Tag (Deployment-Frequency-Proxy). |
+| **Throughput-Forecast** (Monte-Carlo) | „Schaffen wir den Plan?" | 2000 Simulationen über die Verteilung des Wochentempos der letzten 26 Wochen → erwarteter Durchsatz der nächsten 8 Wochen (50 % / 85 % Konfidenz). |
+
+| Release-Kadenz & Time-to-release | Throughput-Forecast (PO-View) |
+|---|---|
+| ![Release-Kadenz](screenshots/dora-cadence.png) | ![Forecast](screenshots/dora-forecast.png) |
+
+> Damit deckt repo2viz die vier **DORA-Metriken** praktisch ab: Lead Time, Deployment
+> Frequency, Change Failure Rate und Rework als MTTR-Näherung. Die Schwellen
+> (14-Tage-Rework-Fenster, 180-Tage-Orphan-Grenze) stehen als Konstanten im Code.
 
 ---
 

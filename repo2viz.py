@@ -20,6 +20,8 @@ Features
 * Top-Dateien & Dateityp-Verteilung
 * PO-/Delivery-Dashboard (Investment-Mix, Throughput, Cycle-Time, Roadmap-Risiko,
   Rework, Hygiene) mit optionaler Azure-DevOps-Work-Item-Anreicherung
+* DORA & Qualitaet: Rework-Rate, Defekt-Module, Test-Begleitung, verwaistes Wissen,
+  Release-Kadenz/Time-to-release, Monte-Carlo-Throughput-Forecast
 * Umschaltbare Zeitraeume (30 T / 90 T / 180 T / 1 J / Gesamt) - clientseitig, instant
 
 Nutzung
@@ -34,6 +36,7 @@ Nur Python-Standardbibliothek + git erforderlich.
 
 import argparse
 import base64
+import bisect
 import datetime as dt
 import json
 import os
@@ -47,7 +50,7 @@ import urllib.request
 from collections import defaultdict
 from urllib.parse import quote, urlparse
 
-__version__ = "2.3.0"
+__version__ = "2.4.0"
 
 # Datensatz-Trenner (ASCII-Steuerzeichen, kommen in git-Metadaten praktisch nie vor)
 REC = "\x1e"   # record separator
@@ -311,12 +314,38 @@ def _top_dir(path: str) -> str:
     return path[:i] if i > 0 else "(root)"
 
 
+def _month_key(day: int) -> int:
+    """Tages-Ordinal -> Ordinal des Monatsersten (für Monats-Buckets, JS-kompatibel)."""
+    d = dt.date.fromordinal(day + EPOCH)
+    return dt.date(d.year, d.month, 1).toordinal() - EPOCH
+
+
+# Test-/Spec-Dateien (für die Test-Begleitungs-Quote)
+_TEST_RE = re.compile(
+    r"(^|/)(tests?|specs?|__tests__|__mocks__)(/|$)"
+    r"|[._-](test|spec)\."
+    r"|(_test|_spec|Test|Spec|Tests)\.[A-Za-z0-9]+$", re.IGNORECASE)
+
+
+def is_test_path(path: str) -> bool:
+    return bool(_TEST_RE.search(path))
+
+
+# Fenster (Tage), in dem ein nachfolgender Fix als "Rework" gilt (Change-Failure-Proxy)
+REWORK_WINDOW = 14
+# Schwelle (Tage) ohne Aktivität des letzten Autors -> "verwaistes" Wissen
+ORPHAN_DAYS = 180
+
+
 def parse_log(raw: str):
     """Zerlegt die git-log-Ausgabe in kompakte, JSON-faehige Strukturen."""
     authors: list[str] = []
     author_index: dict[str, int] = {}
-    commits = []                       # [day, weekday, hour, authorIdx, ins, del, msgCat]
-    file_changes: dict[str, list] = defaultdict(lambda: [0, 0, 0, set()])  # path -> [commits, ins, del, {authorIdx}]
+    commits = []                       # [day, weekday, hour, authorIdx, ins, del, msgCat, wiIds]
+    # path -> [commits, ins, del, {authorIdx}, fixCommits, lastDay, lastAuthorIdx]
+    file_changes: dict[str, list] = defaultdict(lambda: [0, 0, 0, set(), 0, -1, -1])
+    file_events: dict[str, list] = defaultdict(list)                      # path -> [(day, isFix, commitIdx)]
+    month_test: dict[int, list] = defaultdict(lambda: [0, 0])             # monat -> [testChurn, totalChurn]
     ext_changes: dict[str, list[int]] = defaultdict(lambda: [0, 0, 0])     # ext  -> [commits, ins, del]
     dir_changes: dict[str, list] = defaultdict(lambda: [0, 0, set()])      # dir  -> [commits, churn, {authorIdx}]
     couples: dict[tuple, int] = defaultdict(int)                           # (fileA,fileB) -> gemeinsame Commits
@@ -327,6 +356,7 @@ def parse_log(raw: str):
     with_wi = 0
     conventional = 0
     sonst_idx = _CAT_INDEX["sonstige"]
+    fix_idx = _CAT_INDEX["fix"]
 
     records = raw.split(REC)
     for rec in records:
@@ -362,6 +392,9 @@ def parse_log(raw: str):
         wi_ids = extract_wi_ids(subject)
         if wi_ids:
             with_wi += 1
+        is_fix = cat == fix_idx
+        mkey = _month_key(day)
+        c_idx = len(commits)            # Index, den dieser Commit gleich erhält
 
         c_ins = c_del = 0
         touched_files = []
@@ -388,6 +421,16 @@ def parse_log(raw: str):
                 path = path.split("=>")[-1].strip()
             fc = file_changes[path]
             fc[0] += 1; fc[1] += ins_n; fc[2] += del_n; fc[3].add(a_idx)
+            if is_fix:
+                fc[4] += 1
+            if fc[5] == -1:             # erste Begegnung = neuester Commit (git log: newest first)
+                fc[5] = day; fc[6] = a_idx
+            file_events[path].append((day, is_fix, c_idx))
+            churn_f = ins_n + del_n
+            mt = month_test[mkey]
+            mt[1] += churn_f
+            if is_test_path(path):
+                mt[0] += churn_f
             touched_files.append(path)
             ext = os.path.splitext(path)[1].lower().lstrip(".") or "(ohne)"
             if len(ext) > 12:
@@ -441,6 +484,68 @@ def parse_log(raw: str):
     coup.sort(key=lambda t: t[2], reverse=True)
     coupling = [[a, b, n] for a, b, n in coup[:15]]
 
+    # ----- DORA & Qualität ------------------------------------------------- #
+    max_day = max((c[0] for c in commits), default=0)
+    author_last: dict[int, int] = {}
+    for c in commits:
+        if c[0] > author_last.get(c[3], -1):
+            author_last[c[3]] = c[0]
+
+    # Rework / Change-Failure-Proxy: Non-Fix-Commit, dem innerhalb REWORK_WINDOW
+    # Tagen ein Fix auf einer der berührten Dateien folgt.
+    rework_flags = [False] * len(commits)
+    for evs in file_events.values():
+        fix_days = sorted(d for (d, f, _i) in evs if f)
+        if not fix_days:
+            continue
+        for d, f, i in evs:
+            if f:
+                continue
+            lo = bisect.bisect_right(fix_days, d)
+            if lo < len(fix_days) and fix_days[lo] <= d + REWORK_WINDOW:
+                rework_flags[i] = True
+
+    rw_month: dict[int, list] = defaultdict(lambda: [0, 0])   # monat -> [rework, total] (non-fix)
+    for i, c in enumerate(commits):
+        if c[6] == fix_idx:
+            continue
+        mk = _month_key(c[0])
+        rw_month[mk][1] += 1
+        if rework_flags[i]:
+            rw_month[mk][0] += 1
+    rework_series = sorted([mk, v[0], v[1]] for mk, v in rw_month.items())
+    tot_nonfix = sum(v[1] for v in rw_month.values())
+    tot_rework = sum(v[0] for v in rw_month.values())
+    rework_rate = round(tot_rework / tot_nonfix * 100, 1) if tot_nonfix else 0.0
+
+    # Defekt-anfällige Module (meiste fix-Commits)
+    defect = [(p, v[4], v[0], v[1] + v[2]) for p, v in file_changes.items() if v[4] >= 2]
+    defect.sort(key=lambda t: t[1], reverse=True)
+    defect_files = [[p, fx, co, ch] for p, fx, co, ch in defect[:15]]
+
+    # Test-Begleitung (monatliche Test-Churn-Quote)
+    test_series = sorted([mk, v[0], v[1]] for mk, v in month_test.items())
+
+    # Verwaistes Wissen: Dateien, deren letzter Autor lange inaktiv ist
+    orphans = []
+    for p, v in file_changes.items():
+        la, ld = v[6], v[5]
+        if la < 0:
+            continue
+        if author_last.get(la, max_day) < max_day - ORPHAN_DAYS:
+            orphans.append((p, ld, authors[la], v[0], v[1] + v[2]))
+    orphans.sort(key=lambda t: t[4], reverse=True)
+    orphan_churn = sum(t[4] for t in orphans)
+    top_orphans = [[p, ld, an, ch, cn] for p, ld, an, ch, cn in orphans[:15]]
+
+    quality = {
+        "reworkSeries": rework_series, "reworkRate": rework_rate, "reworkWindow": REWORK_WINDOW,
+        "defectFiles": defect_files,
+        "testSeries": test_series,
+        "orphans": top_orphans, "orphanCount": len(orphans), "orphanChurn": orphan_churn,
+        "orphanDays": ORPHAN_DAYS,
+    }
+
     avg_msg = round(msg_len_total / msg_count, 1) if msg_count else 0
 
     return {
@@ -453,6 +558,7 @@ def parse_log(raw: str):
         "coupling": coupling,
         "cats": COMMIT_CATS,
         "avgMsgLen": avg_msg,
+        "quality": quality,
         # PO-Rohdaten (von build_po weiterverarbeitet)
         "_wiStats": wi_stats,
         "_withWI": with_wi,
@@ -589,6 +695,7 @@ def build_html(data: dict, meta: dict) -> str:
         "coupling": data["coupling"],
         "cats": data["cats"],
         "avgMsgLen": data["avgMsgLen"],
+        "quality": data.get("quality"),
         "tags": data.get("tags", []),
         "po": data.get("po"),
         "meta": meta,
@@ -697,7 +804,7 @@ header{display:flex;flex-wrap:wrap;align-items:center;gap:16px;margin:8px 0 28px
 .col-12{grid-column:span 12}.col-8{grid-column:span 8}.col-6{grid-column:span 6}.col-4{grid-column:span 4}
 @media(max-width:880px){.col-8,.col-6,.col-4{grid-column:span 12}}
 .cv{position:relative;width:100%}
-.h260{height:260px}.h300{height:300px}.h200{height:200px}
+.h260{height:260px}.h300{height:300px}.h200{height:200px}.h240{height:240px}
 
 /* Insights */
 .insights{list-style:none;margin:0;padding:0;display:grid;gap:10px}
@@ -1371,6 +1478,94 @@ function renderDayDetail(day){
   if(cell) cell.classList.add('sel');
 }
 
+// ====================================================================== //
+//  DORA & Qualität (gesamt-bezogen)
+// ====================================================================== //
+function renderReworkTrend(){
+  const q=DATA.quality; if(!q) return;
+  const host=document.getElementById('reworkStat');
+  if(host) host.innerHTML=`<b>${q.reworkRate}%</b> der Nicht-Fix-Commits ziehen binnen ${q.reworkWindow} Tagen einen Fix auf derselben Datei nach sich — Näherung für die Change-Failure-Rate (DORA).`;
+  const s=q.reworkSeries; if(!s.length) return;
+  const labels=s.map(r=>bucketLabel(r[0],'month'));
+  const data=s.map(r=> r[2]? +(r[1]/r[2]*100).toFixed(1):0);
+  const ctx=document.getElementById('cvRework');
+  const grad=ctx.getContext('2d').createLinearGradient(0,0,0,240);
+  grad.addColorStop(0,'rgba(255,155,155,.30)'); grad.addColorStop(1,'rgba(255,155,155,0)');
+  charts.rework=new Chart(ctx,{type:'line',data:{labels,datasets:[{label:'Rework-Rate',
+    data,borderColor:css('--neg'),backgroundColor:grad,fill:true,tension:.3,pointRadius:0,borderWidth:2}]},
+    options:{responsive:true,maintainAspectRatio:false,
+      scales:{x:{grid:{display:false},ticks:{maxRotation:0,autoSkipPadding:18}},
+        y:{beginAtZero:true,grid:{color:'#262430'},ticks:{callback:v=>v+'%'}}},
+      plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>c.parsed.y+'% Rework'}}}}});
+}
+
+function renderDefectFiles(){
+  const df=DATA.quality?DATA.quality.defectFiles:[];
+  const ctx=document.getElementById('cvDefect');
+  if(!df.length){ ctx.parentElement.innerHTML='<div class="muted" style="padding:30px 0">Keine Datei mit ≥ 2 <code>fix:</code>-Commits — entweder wenig Bugfixing oder kaum Conventional-Commits.</div>'; return; }
+  charts.defect=new Chart(ctx,{type:'bar',data:{
+    labels:df.map(f=>f[0].length>40?'…'+f[0].slice(-39):f[0]),
+    datasets:[{label:'fix-Commits',data:df.map(f=>f[1]),backgroundColor:'rgba(255,155,155,.85)',borderRadius:4}]},
+    options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,
+      scales:{x:{grid:{color:'#262430'},ticks:{precision:0}},y:{grid:{display:false},ticks:{font:{size:10}}}},
+      plugins:{legend:{display:false},
+        tooltip:{callbacks:{afterLabel:c=>{const f=df[c.dataIndex];
+          return `${f[2]} Commits gesamt · ${fmt(f[3])} Zeilen Churn`;}}}}}});
+}
+
+function renderTestTrend(){
+  const q=DATA.quality; if(!q) return;
+  const ts=q.testSeries; let tt=0,tot=0; for(const r of ts){tt+=r[1];tot+=r[2];}
+  const overall=tot?Math.round(tt/tot*100):0;
+  const host=document.getElementById('testStat');
+  if(host) host.innerHTML=`<b>${overall}%</b> des Code-Churns entfällt auf Test-Dateien — wächst die Testabdeckung mit?`;
+  if(!ts.length) return;
+  const labels=ts.map(r=>bucketLabel(r[0],'month'));
+  const data=ts.map(r=> r[2]? +(r[0+1]/r[2]*100).toFixed(1):0);
+  charts.test=new Chart(document.getElementById('cvTest'),{type:'line',data:{labels,
+    datasets:[{label:'Test-Anteil',data,borderColor:css('--accent'),
+      fill:false,tension:.3,pointRadius:0,borderWidth:2}]},
+    options:{responsive:true,maintainAspectRatio:false,
+      scales:{x:{grid:{display:false},ticks:{maxRotation:0,autoSkipPadding:20}},
+        y:{beginAtZero:true,grid:{color:'#262430'},ticks:{callback:v=>v+'%'}}},
+      plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>c.parsed.y+'% Test-Churn'}}}}});
+}
+
+function renderOrphans(){
+  const q=DATA.quality; if(!q) return;
+  const host=document.getElementById('orphanStat');
+  if(host) host.innerHTML=`<b>${q.orphanCount}</b> Dateien (${fmt(q.orphanChurn)} Zeilen) wurden zuletzt von jemandem berührt, der seit > ${q.orphanDays} Tagen inaktiv ist — Code ohne aktiven Betreuer.`;
+  const body=q.orphans.map(o=>{const[p,ld,an,ch,cn]=o;
+    return `<tr><td class="path">${p.length>48?'…'+p.slice(-47):p}</td>
+      <td>${an}</td><td class="num">${dayToDate(ld).toISOString().slice(0,10)}</td>
+      <td class="num">${ch}</td><td class="num">${fmt(cn)}</td></tr>`;}).join('');
+  document.getElementById('orphanBody').innerHTML=body||'<tr><td colspan="5" class="muted">Kein verwaistes Wissen erkannt — alle Dateien haben aktive Betreuer.</td></tr>';
+}
+
+function renderReleaseCadence(){
+  const tags=(DATA.tags||[]).slice().sort((a,b)=>a[1]-b[1]);
+  const host=document.getElementById('cadStats');
+  if(tags.length<2){ if(host)host.textContent='Zu wenige Tags für eine Release-Auswertung.'; return; }
+  const iv=[]; for(let i=1;i<tags.length;i++) iv.push(tags[i][1]-tags[i-1][1]);
+  iv.sort((a,b)=>a-b); const medIv=iv[Math.floor((iv.length-1)/2)];
+  const tagDays=tags.map(t=>t[1]); const ttr=[];
+  for(const c of DATA.commits){ const d=c[0];
+    let lo=0,hi=tagDays.length; while(lo<hi){const m=(lo+hi)>>1; if(tagDays[m]<d) lo=m+1; else hi=m;}
+    if(lo<tagDays.length) ttr.push(tagDays[lo]-d); }
+  ttr.sort((a,b)=>a-b); const medTtr=ttr.length?ttr[Math.floor((ttr.length-1)/2)]:null;
+  if(host) host.innerHTML=`Median-Abstand zwischen Releases: <b>${medIv} T</b> · Median Time-to-release (Commit→nächster Tag): <b>${medTtr==null?'–':medTtr+' T'}</b> — DORA-Deployment-Frequency-Proxy.`;
+  const q={}; for(const t of tags){ const dte=dayToDate(t[1]);
+    const key=dte.getUTCFullYear()*4+Math.floor(dte.getUTCMonth()/3); q[key]=(q[key]||0)+1; }
+  const keys=Object.keys(q).map(Number).sort((a,b)=>a-b);
+  const labels=keys.map(k=>"Q"+(k%4+1)+" '"+String(Math.floor(k/4)).slice(2));
+  charts.cad=new Chart(document.getElementById('cvCadence'),{type:'bar',data:{labels,
+    datasets:[{label:'Releases',data:keys.map(k=>q[k]),backgroundColor:'rgba(239,184,200,.85)',borderRadius:4}]},
+    options:{responsive:true,maintainAspectRatio:false,
+      scales:{x:{grid:{display:false},ticks:{maxRotation:0,autoSkipPadding:14}},
+        y:{beginAtZero:true,grid:{color:'#262430'},ticks:{precision:0}}},
+      plugins:{legend:{display:false}}}});
+}
+
 // ----- Layout -----
 function gridHTML(){
   return `
@@ -1466,6 +1661,33 @@ function gridHTML(){
   <div class="card col-12">
     <h2>Contributor-Lebensdauer</h2><div class="desc">Erste bis letzte Aktivität je Contributor (Top 12 nach Commits, gesamt)</div>
     <div class="cv h300"><canvas id="cvLifespan"></canvas></div>
+  </div>
+
+  <div class="card col-12">
+    <h2>Rework-Rate · Change-Failure-Proxy</h2><div class="desc" id="reworkStat"></div>
+    <div class="cv h240"><canvas id="cvRework"></canvas></div>
+  </div>
+
+  <div class="card col-8">
+    <h2>Defekt-anfällige Module</h2><div class="desc">Dateien mit den meisten <code>fix:</code>-Commits — wo sammeln sich Bugs? (gesamt)</div>
+    <div class="cv h300"><canvas id="cvDefect"></canvas></div>
+  </div>
+  <div class="card col-4">
+    <h2>Test-Begleitung</h2><div class="desc" id="testStat"></div>
+    <div class="cv h300"><canvas id="cvTest"></canvas></div>
+  </div>
+
+  <div class="card col-12">
+    <h2>Verwaistes Wissen</h2><div class="desc" id="orphanStat"></div>
+    <div class="tscroll"><table class="ctable"><thead><tr>
+      <th>Datei</th><th>Letzter Autor</th><th class="num">Letzte Aktivität</th>
+      <th class="num">Änderungen</th><th class="num">Churn</th>
+    </tr></thead><tbody id="orphanBody"></tbody></table></div>
+  </div>
+
+  <div class="card col-12">
+    <h2>Release-Kadenz & Time-to-release</h2><div class="desc" id="cadStats"></div>
+    <div class="cv h240"><canvas id="cvCadence"></canvas></div>
   </div>`;
 }
 
@@ -1546,6 +1768,11 @@ function poGridHTML(po){
       <th class="num">Contributors</th><th class="num">Bug-Anteil</th><th>Risiko</th>
     </tr></thead><tbody id="poAreaBody"></tbody></table></div>`
       : `<div class="muted">Erfordert Work-Item-Metadaten (Azure DevOps + PAT). Aktuell nicht verfügbar.</div>`}
+  </div>
+
+  <div class="card col-12">
+    <h2>Throughput-Forecast (Monte-Carlo)</h2><div class="desc" id="poForecastStat">Prognostizierter Liefer-Durchsatz der nächsten 8 Wochen auf Basis des historischen Wochentempos — schaffen wir den Plan?</div>
+    <div class="cv h200"><canvas id="cvPoForecast"></canvas></div>
   </div>
 
   <div class="card col-${hasArea?'4':'12'}">
@@ -1661,6 +1888,35 @@ function renderPoArea(){
         tooltip:{callbacks:{afterLabel:c=>`${src[c.dataIndex][1]} Commits · ${src[c.dataIndex][3]} Contributors`}}}}});
 }
 
+function renderPoForecast(){
+  // Monte-Carlo: prognostiziert den Liefer-Durchsatz der nächsten 8 Wochen
+  // aus der Verteilung des historischen Wochentempos (letzte 26 Wochen).
+  const host=document.getElementById('poForecastStat');
+  const weeks={};
+  for(const c of DATA.commits){ if(!c[7]||!c[7].length) continue;
+    const wk=c[0]-((dayToDate(c[0]).getUTCDay()+6)%7);
+    (weeks[wk]||(weeks[wk]=new Set())); for(const id of c[7]) weeks[wk].add(id); }
+  const wkKeys=Object.keys(weeks).map(Number).sort((a,b)=>a-b);
+  if(wkKeys.length<4){ if(host)host.textContent='Zu wenig Verlaufsdaten für eine belastbare Prognose.'; return; }
+  const last=wkKeys[wkKeys.length-1], start=last-26*7;
+  const samples=[]; for(let w=start;w<=last;w+=7) samples.push(weeks[w]?weeks[w].size:0);
+  const HORIZON=8, TRIALS=2000, totals=[];
+  for(let t=0;t<TRIALS;t++){ let s=0; for(let h=0;h<HORIZON;h++) s+=samples[(Math.random()*samples.length)|0]; totals.push(s); }
+  totals.sort((a,b)=>a-b);
+  const pct=p=>totals[Math.min(totals.length-1,Math.floor(p*totals.length))];
+  const p50=pct(0.5), p85=pct(0.15);   // 85 % Konfidenz = konservatives unteres Perzentil
+  if(host) host.innerHTML=`Bei aktuellem Tempo in den nächsten ${HORIZON} Wochen voraussichtlich <b>~${p50}</b> ${DATA.po.refLabel}s (50 %) · mit 85 % Konfidenz mindestens <b>${p85}</b>.`;
+  const hist={}; for(const v of totals) hist[v]=(hist[v]||0)+1;
+  const labels=Object.keys(hist).map(Number).sort((a,b)=>a-b);
+  charts.poFc=new Chart(document.getElementById('cvPoForecast'),{type:'bar',data:{labels,
+    datasets:[{label:'Simulationen',data:labels.map(l=>hist[l]),backgroundColor:'rgba(208,188,255,.7)'}]},
+    options:{responsive:true,maintainAspectRatio:false,
+      scales:{x:{grid:{display:false},title:{display:true,text:DATA.po.refLabel+'s in '+HORIZON+' Wochen'}},
+        y:{display:false}},
+      plugins:{legend:{display:false},
+        tooltip:{callbacks:{title:items=>items[0].label+' '+DATA.po.refLabel+'s',label:c=>c.parsed.y+' Simulationen'}}}}});
+}
+
 function renderPO(rows, days){
   const po=DATA.po;
   document.getElementById('app').innerHTML =
@@ -1673,6 +1929,7 @@ function renderPO(rows, days){
   renderPoRoadmap();
   renderPoHygiene(rows);
   renderPoArea();
+  renderPoForecast();
 }
 
 let curDays=0, curAuthor=null, selectedDay=null, curRows=[], curView='eng';
@@ -1721,6 +1978,11 @@ function render(days){
   renderDirBus();
   renderCoupling();
   renderLifespan();
+  renderReworkTrend();
+  renderDefectFiles();
+  renderTestTrend();
+  renderOrphans();
+  renderReleaseCadence();
 }
 
 function setAuthor(idx){
