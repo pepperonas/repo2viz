@@ -5,7 +5,7 @@
 > Repository-Aktivität auf einen Blick — als eigenständige, interaktive HTML-Datei.
 
 <p>
-  <a href="https://github.com/pepperonas/repo2viz/releases"><img alt="Version" src="https://img.shields.io/badge/version-2.4.0-d0bcff"></a>
+  <a href="https://github.com/pepperonas/repo2viz/releases"><img alt="Version" src="https://img.shields.io/badge/version-2.5.0-d0bcff"></a>
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-yellow"></a>
   <a href="https://github.com/pepperonas/repo2viz/releases/latest"><img alt="Downloads" src="https://img.shields.io/github/downloads/pepperonas/repo2viz/total?label=downloads&color=blueviolet"></a>
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white">
@@ -140,6 +140,7 @@ etwaigen Fehlermeldungen maskiert.
 | 📱 **Mobile-Ready** | Responsives Layout für Smartphone & Tablet |
 | 📋 **PO-/Delivery-Dashboard** | Eigener View, der Engineering-Daten in PO-Sprache übersetzt — mit Azure-DevOps-Work-Item-Anreicherung ([Details](#po--delivery-dashboard)) |
 | 📐 **DORA & Qualität** | Rework-Rate (Change-Failure), Defekt-Module, Test-Begleitung, verwaistes Wissen, Release-Kadenz/Time-to-release + Monte-Carlo-Forecast ([Details](#dora--qualität)) |
+| 🧑‍🤝‍🧑 **Team & Architektur** | Team-Trend (aktive Devs, Bus-Faktor, After-Hours), Cross-Modul-Kopplung, Codebase-IST (Sprachen, größte Dateien) ([Details](#team--architektur)) |
 | 🔐 **GitHub & Azure DevOps** | Provider-Auto-Erkennung, Token-Auth für private Repos |
 
 ---
@@ -304,6 +305,29 @@ ein Forecast liegt im PO-View.
 > Damit deckt repo2viz die vier **DORA-Metriken** praktisch ab: Lead Time, Deployment
 > Frequency, Change Failure Rate und Rework als MTTR-Näherung. Die Schwellen
 > (14-Tage-Rework-Fenster, 180-Tage-Orphan-Grenze) stehen als Konstanten im Code.
+
+---
+
+## Team & Architektur
+
+Drei Dimensionen, die über reine Aktivität hinausgehen — **alle clone-only**.
+
+![Team-Entwicklung](screenshots/team-trend.png)
+
+- **Team-Trend** — aktive Entwickler pro Monat und After-Hours-/Wochenend-Anteil (Dual-Achse)
+  plus **Bus-Faktor je Quartal**. Antwort: *„Wächst das Team, steigt der Druck, werden wir
+  resilienter oder fragiler?"*
+- **Cross-Modul-Kopplung** — Anteil der Multi-File-Commits, die **Modulgrenzen überspannen**
+  (Trend), plus die am stärksten verschränkten Modul-Paare. Antwort: *„Erodiert unsere
+  Modularität?"* Module werden über bis zu zwei Pfad-Ebenen bestimmt (z. B. `packages/ui`),
+  Wurzeldateien (README, Configs …) zählen nicht als Modul.
+- **Codebase-IST** — aktuelle **Sprach-/Dateityp-Verteilung** nach Größe und **größte Dateien**
+  in HEAD (via `git ls-tree --long`, ohne Checkout). Antwort: *„Wie sieht die Codebase jetzt
+  aus — nicht nur, wie sie sich verändert?"*
+
+| Cross-Modul-Kopplung | Sprachen heute |
+|---|---|
+| ![Cross-Modul-Kopplung](screenshots/cross-module.png) | ![Sprachen heute](screenshots/languages.png) |
 
 ---
 

@@ -5,6 +5,19 @@ Alle nennenswerten Änderungen an diesem Projekt werden hier dokumentiert.
 Das Format orientiert sich an [Keep a Changelog](https://keepachangelog.com/de/1.1.0/),
 und das Projekt folgt [Semantic Versioning](https://semver.org/lang/de/).
 
+## [2.5.0] – 2026-06-02
+
+### Hinzugefügt
+- **Team-Trend** (clone-only): aktive Entwickler pro Monat + After-Hours-/Wochenend-Anteil
+  (Dual-Achse) sowie **Bus-Faktor-Trend** je Quartal — Team-Gesundheit & Resilienz über Zeit.
+- **Cross-Modul-Kopplung**: Anteil der Multi-File-Commits, die Modulgrenzen überspannen
+  (Trend) plus Liste der am stärksten verschränkten Modul-Paare — Indikator für
+  Architektur-Erosion. Module werden über bis zu zwei Pfad-Ebenen bestimmt
+  (z. B. `packages/ui`), Wurzeldateien ausgenommen.
+- **Codebase-IST-Zustand**: aktuelle Sprach-/Dateityp-Verteilung nach Größe und größte
+  Dateien in HEAD (via `git ls-tree --long`, ohne Checkout) — schließt die Lücke zwischen
+  „Veränderung" (Churn) und „aktuellem Stand".
+
 ## [2.4.0] – 2026-06-01
 
 ### Hinzugefügt
@@ -106,6 +119,7 @@ Change Failure Rate, Rework als MTTR-Näherung).
 - Umschaltbare Zeiträume (30 T / 90 T / 180 T / 1 Jahr / Gesamt), clientseitig.
 - Material-3-Expressive-Dark-Design, Chart.js via CDN mit SRI-Hashes.
 
+[2.5.0]: https://github.com/pepperonas/repo2viz/releases/tag/v2.5.0
 [2.4.0]: https://github.com/pepperonas/repo2viz/releases/tag/v2.4.0
 [2.3.0]: https://github.com/pepperonas/repo2viz/releases/tag/v2.3.0
 [2.2.0]: https://github.com/pepperonas/repo2viz/releases/tag/v2.2.0

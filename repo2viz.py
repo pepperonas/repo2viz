@@ -22,6 +22,8 @@ Features
   Rework, Hygiene) mit optionaler Azure-DevOps-Work-Item-Anreicherung
 * DORA & Qualitaet: Rework-Rate, Defekt-Module, Test-Begleitung, verwaistes Wissen,
   Release-Kadenz/Time-to-release, Monte-Carlo-Throughput-Forecast
+* Team & Architektur: Team-Trend (aktive Devs, Bus-Faktor, After-Hours),
+  Cross-Modul-Kopplung, Codebase-IST (Sprachen, groesste Dateien)
 * Umschaltbare Zeitraeume (30 T / 90 T / 180 T / 1 J / Gesamt) - clientseitig, instant
 
 Nutzung
@@ -50,7 +52,7 @@ import urllib.request
 from collections import defaultdict
 from urllib.parse import quote, urlparse
 
-__version__ = "2.4.0"
+__version__ = "2.5.0"
 
 # Datensatz-Trenner (ASCII-Steuerzeichen, kommen in git-Metadaten praktisch nie vor)
 REC = "\x1e"   # record separator
@@ -286,6 +288,53 @@ def git_tags(repo_dir: str):
     return tags
 
 
+def git_tree_sizes(repo_dir: str):
+    """Codebase-IST-Zustand: alle Dateien in HEAD mit Größe (Bytes) — ohne Checkout.
+
+    Nutzt `git ls-tree -r --long HEAD` (liefert Blob-Größen direkt aus dem Bare-Repo).
+    Liefert {"extBytes": [[ext, bytes, files], ...], "largest": [[path, bytes], ...],
+             "totalBytes": int, "totalFiles": int} oder None, wenn kein HEAD existiert.
+    """
+    res = subprocess.run(
+        ["git", "-C", repo_dir, "ls-tree", "-r", "--long", "-z", "HEAD"],
+        capture_output=True, text=True, errors="replace",
+    )
+    if res.returncode != 0 or not res.stdout:
+        return None
+    ext_bytes: dict[str, list] = defaultdict(lambda: [0, 0])   # ext -> [bytes, files]
+    files = []
+    total_bytes = 0
+    total_files = 0
+    for entry in res.stdout.split("\0"):
+        if not entry:
+            continue
+        # Format: "<mode> <type> <sha> <size>\t<path>"
+        meta, _, path = entry.partition("\t")
+        parts = meta.split()
+        if len(parts) < 4 or parts[1] != "blob":
+            continue
+        try:
+            size = int(parts[3])
+        except ValueError:
+            continue
+        total_bytes += size
+        total_files += 1
+        ext = os.path.splitext(path)[1].lower().lstrip(".") or "(ohne)"
+        if len(ext) > 12:
+            ext = "(ohne)"
+        eb = ext_bytes[ext]
+        eb[0] += size; eb[1] += 1
+        files.append((path, size))
+    if not total_files:
+        return None
+    top_ext = sorted(ext_bytes.items(), key=lambda kv: kv[1][0], reverse=True)[:14]
+    top_ext = [[e, v[0], v[1]] for e, v in top_ext]
+    files.sort(key=lambda t: t[1], reverse=True)
+    largest = [[p, s] for p, s in files[:15]]
+    return {"extBytes": top_ext, "largest": largest,
+            "totalBytes": total_bytes, "totalFiles": total_files}
+
+
 EPOCH = dt.date(1970, 1, 1).toordinal()
 
 # Conventional-Commit-Typen -> Kategorie-Index (Reihenfolge = Index)
@@ -312,6 +361,21 @@ def _top_dir(path: str) -> str:
     """Oberstes Verzeichnis eines Pfads (oder '(root)' fuer Dateien im Wurzelverzeichnis)."""
     i = path.find("/")
     return path[:i] if i > 0 else "(root)"
+
+
+def _module_of(path: str) -> str | None:
+    """Modul-Bezeichner eines Pfads fuer die Cross-Modul-Kopplung.
+
+    Nutzt bis zu zwei Pfad-Ebenen (z. B. 'src/auth', 'packages/ui'), damit echte
+    Submodule unterschieden werden. Dateien im Wurzelverzeichnis (README, setup.py …)
+    sind keine Module und liefern None (werden ignoriert).
+    """
+    segs = path.split("/")
+    if len(segs) == 1:
+        return None
+    if len(segs) >= 3:
+        return segs[0] + "/" + segs[1]
+    return segs[0]
 
 
 def _month_key(day: int) -> int:
@@ -349,6 +413,8 @@ def parse_log(raw: str):
     ext_changes: dict[str, list[int]] = defaultdict(lambda: [0, 0, 0])     # ext  -> [commits, ins, del]
     dir_changes: dict[str, list] = defaultdict(lambda: [0, 0, set()])      # dir  -> [commits, churn, {authorIdx}]
     couples: dict[tuple, int] = defaultdict(int)                           # (fileA,fileB) -> gemeinsame Commits
+    mod_couples: dict[tuple, int] = defaultdict(int)                       # (dirA,dirB) -> gemeinsame Commits
+    cross_month: dict[int, list] = defaultdict(lambda: [0, 0])            # monat -> [crossModul, multiFile]
     msg_len_total = 0
     msg_count = 0
     # PO-/Delivery-Auswertung
@@ -399,6 +465,7 @@ def parse_log(raw: str):
         c_ins = c_del = 0
         touched_files = []
         touched_dirs = set()
+        touched_modules = set()
         for ln in lines[1:]:
             if not ln.strip():
                 continue
@@ -439,11 +506,26 @@ def parse_log(raw: str):
             ec[0] += 1; ec[1] += ins_n; ec[2] += del_n
             d = _top_dir(path)
             touched_dirs.add(d)
+            mod = _module_of(path)
+            if mod:
+                touched_modules.add(mod)
             dir_changes[d][1] += ins_n + del_n
 
         for d in touched_dirs:
             dir_changes[d][0] += 1
             dir_changes[d][2].add(a_idx)
+
+        # Cross-Modul-Kopplung: spannt ein Multi-File-Commit mehrere Module?
+        if len(set(touched_files)) >= 2:
+            cm = cross_month[mkey]
+            cm[1] += 1
+            if len(touched_modules) >= 2:
+                cm[0] += 1
+                if len(touched_modules) <= 25:
+                    dl = sorted(touched_modules)
+                    for i in range(len(dl)):
+                        for j in range(i + 1, len(dl)):
+                            mod_couples[(dl[i], dl[j])] += 1
 
         # Co-Change-Kopplung (nur ueberschaubare Commits, sonst quadratische Explosion)
         if 2 <= len(touched_files) <= 40:
@@ -546,6 +628,16 @@ def parse_log(raw: str):
         "orphanDays": ORPHAN_DAYS,
     }
 
+    # Cross-Modul-Kopplung (Architektur-Erosion)
+    mod_coup = [(a, b, n) for (a, b), n in mod_couples.items() if n >= 3]
+    mod_coup.sort(key=lambda t: t[2], reverse=True)
+    mod_pairs = [[a, b, n] for a, b, n in mod_coup[:15]]
+    cross_series = sorted([mk, v[0], v[1]] for mk, v in cross_month.items())
+    tot_mf = sum(v[1] for v in cross_month.values())
+    tot_cross = sum(v[0] for v in cross_month.values())
+    cross_rate = round(tot_cross / tot_mf * 100, 1) if tot_mf else 0.0
+    architecture = {"modPairs": mod_pairs, "crossSeries": cross_series, "crossRate": cross_rate}
+
     avg_msg = round(msg_len_total / msg_count, 1) if msg_count else 0
 
     return {
@@ -559,6 +651,7 @@ def parse_log(raw: str):
         "cats": COMMIT_CATS,
         "avgMsgLen": avg_msg,
         "quality": quality,
+        "architecture": architecture,
         # PO-Rohdaten (von build_po weiterverarbeitet)
         "_wiStats": wi_stats,
         "_withWI": with_wi,
@@ -696,6 +789,8 @@ def build_html(data: dict, meta: dict) -> str:
         "cats": data["cats"],
         "avgMsgLen": data["avgMsgLen"],
         "quality": data.get("quality"),
+        "architecture": data.get("architecture"),
+        "codebase": data.get("codebase"),
         "tags": data.get("tags", []),
         "po": data.get("po"),
         "meta": meta,
@@ -921,7 +1016,16 @@ const WD = ["Mo","Di","Mi","Do","Fr","Sa","So"];
 const MONTHS = ["Jan","Feb","Mär","Apr","Mai","Jun","Jul","Aug","Sep","Okt","Nov","Dez"];
 const css = (v)=>getComputedStyle(document.documentElement).getPropertyValue(v).trim();
 const fmt = (n)=> n>=1000 ? (n/1000).toFixed(n>=10000?0:1).replace(".0","")+"k" : ""+n;
+const fmtBytes = (n)=> n>=1048576 ? (n/1048576).toFixed(1)+" MB" : n>=1024 ? (n/1024).toFixed(0)+" KB" : n+" B";
 const dayToDate = (d)=> new Date(d*DAY_MS);
+const LANGS={js:'JavaScript',mjs:'JavaScript',cjs:'JavaScript',jsx:'JavaScript',ts:'TypeScript',tsx:'TypeScript',
+  py:'Python',java:'Java',kt:'Kotlin',go:'Go',rs:'Rust',rb:'Ruby',php:'PHP',c:'C',h:'C/C++',hpp:'C++',
+  cpp:'C++',cc:'C++',cxx:'C++',cs:'C#',swift:'Swift',scala:'Scala',sh:'Shell',bash:'Shell',zsh:'Shell',
+  html:'HTML',htm:'HTML',css:'CSS',scss:'SCSS',sass:'SCSS',less:'LESS',vue:'Vue',svelte:'Svelte',
+  json:'JSON',yaml:'YAML',yml:'YAML',toml:'TOML',xml:'XML',md:'Markdown',rst:'reStructuredText',
+  sql:'SQL',lock:'Lockfile',txt:'Text',cfg:'Config',ini:'Config',dart:'Dart',ex:'Elixir',exs:'Elixir',
+  r:'R',pl:'Perl',lua:'Lua',proto:'Protobuf',gradle:'Gradle',svg:'SVG'};
+const langOf=(ext)=> LANGS[ext] || ('.'+ext);
 
 Chart.defaults.color = css('--on-surface-var');
 Chart.defaults.borderColor = '#2a282f';
@@ -1566,6 +1670,110 @@ function renderReleaseCadence(){
       plugins:{legend:{display:false}}}});
 }
 
+// ====================================================================== //
+//  Team-Trend & Architektur (gesamt-bezogen)
+// ====================================================================== //
+function _monthlyTeam(){
+  const m={};   // month -> {auth:Set, total, after}
+  for(const c of DATA.commits){ const mk=bucketOf(c[0],'month');
+    const e=m[mk]||(m[mk]={auth:new Set(),total:0,after:0});
+    e.auth.add(c[3]); e.total++;
+    const wknd=c[1]>=5, off=c[2]<8||c[2]>=18; if(wknd||off) e.after++; }
+  return Object.keys(m).map(Number).sort((a,b)=>a-b).map(k=>({mk:k,...m[k]}));
+}
+
+function renderTeamTrend(){
+  const t=_monthlyTeam(); if(!t.length) return;
+  const labels=t.map(r=>bucketLabel(r.mk,'month'));
+  const devs=t.map(r=>r.auth.size);
+  const after=t.map(r=> r.total? Math.round(r.after/r.total*100):0);
+  charts.team=new Chart(document.getElementById('cvTeam'),{data:{labels,datasets:[
+    {type:'bar',label:'Aktive Entwickler',data:devs,backgroundColor:'rgba(208,188,255,.85)',
+     borderRadius:3,yAxisID:'y',order:2},
+    {type:'line',label:'After-Hours-/Wochenend-Anteil',data:after,borderColor:css('--tertiary'),
+     backgroundColor:'transparent',tension:.3,pointRadius:0,borderWidth:2,yAxisID:'y1',order:1},
+  ]},options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},
+    scales:{x:{grid:{display:false},ticks:{maxRotation:0,autoSkipPadding:18}},
+      y:{beginAtZero:true,position:'left',grid:{color:'#262430'},title:{display:true,text:'Aktive Devs'},ticks:{precision:0}},
+      y1:{beginAtZero:true,max:100,position:'right',grid:{display:false},title:{display:true,text:'After-Hours %'},ticks:{callback:v=>v+'%'}}},
+    plugins:{legend:{position:'top',align:'end'}}}});
+}
+
+function renderBusFactorTrend(){
+  // Bus-Faktor je Quartal: minimale Autorenzahl, die >=50% der Commits stellt
+  const q={}; for(const c of DATA.commits){ const dte=dayToDate(c[0]);
+    const key=dte.getUTCFullYear()*4+Math.floor(dte.getUTCMonth()/3);
+    (q[key]||(q[key]={}))[c[3]]=((q[key]||{})[c[3]]||0)+1; }
+  const keys=Object.keys(q).map(Number).sort((a,b)=>a-b);
+  const bf=keys.map(k=>{const counts=Object.values(q[k]).sort((a,b)=>b-a);
+    const tot=counts.reduce((a,b)=>a+b,0); let acc=0,n=0;
+    for(const c of counts){acc+=c;n++; if(acc>=tot*0.5)break;} return n;});
+  const labels=keys.map(k=>"Q"+(k%4+1)+" '"+String(Math.floor(k/4)).slice(2));
+  charts.bft=new Chart(document.getElementById('cvBusTrend'),{type:'bar',data:{labels,
+    datasets:[{label:'Bus-Faktor',data:bf,backgroundColor:'rgba(125,211,192,.85)',borderRadius:3}]},
+    options:{responsive:true,maintainAspectRatio:false,
+      scales:{x:{grid:{display:false},ticks:{maxRotation:0,autoSkipPadding:14}},
+        y:{beginAtZero:true,grid:{color:'#262430'},ticks:{precision:0}}},
+      plugins:{legend:{display:false},
+        tooltip:{callbacks:{label:c=>c.parsed.y+' Person(en) für ≥ 50 % der Commits'}}}}});
+}
+
+function renderModuleCoupling(){
+  const a=DATA.architecture; if(!a) return;
+  const host=document.getElementById('crossStat');
+  if(host) host.innerHTML=`<b>${a.crossRate}%</b> der Multi-File-Commits überspannen Modulgrenzen — steigt die Kurve, erodiert die Modularität.`;
+  const s=a.crossSeries; if(!s.length) return;
+  const labels=s.map(r=>bucketLabel(r[0],'month'));
+  const data=s.map(r=> r[2]? +(r[1]/r[2]*100).toFixed(1):0);
+  const ctx=document.getElementById('cvCross');
+  const grad=ctx.getContext('2d').createLinearGradient(0,0,0,240);
+  grad.addColorStop(0,'rgba(255,216,168,.30)'); grad.addColorStop(1,'rgba(255,216,168,0)');
+  charts.cross=new Chart(ctx,{type:'line',data:{labels,datasets:[{label:'Cross-Modul-Anteil',
+    data,borderColor:'#ffd8a8',backgroundColor:grad,fill:true,tension:.3,pointRadius:0,borderWidth:2}]},
+    options:{responsive:true,maintainAspectRatio:false,
+      scales:{x:{grid:{display:false},ticks:{maxRotation:0,autoSkipPadding:18}},
+        y:{beginAtZero:true,max:100,grid:{color:'#262430'},ticks:{callback:v=>v+'%'}}},
+      plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>c.parsed.y+'% cross-modul'}}}}});
+}
+
+function renderModulePairs(){
+  const a=DATA.architecture; const mp=a?a.modPairs:[];
+  const html=mp.length? mp.map(p=>`<div class="row">
+    <span class="files" title="${p[0]}  ↔  ${p[1]}"><b>${p[0]}</b> ↔ <b>${p[1]}</b></span>
+    <span class="cnt">${p[2]}×</span></div>`).join('')
+    : '<div class="muted">Keine nennenswerte Modul-übergreifende Kopplung gefunden.</div>';
+  document.getElementById('modPairBox').innerHTML=html;
+}
+
+function renderLanguages(){
+  const cb=DATA.codebase; const ctx=document.getElementById('cvLang');
+  if(!cb){ ctx.parentElement.innerHTML='<div class="muted" style="padding:30px 0">Kein Codebase-Stand verfügbar (leeres Repo?).</div>'; return; }
+  const hst=document.getElementById('codebaseStat');
+  if(hst) hst.innerHTML=`Aktueller Stand (HEAD): <b>${cb.totalFiles}</b> Dateien · <b>${fmtBytes(cb.totalBytes)}</b>.`;
+  // nach Sprache aggregieren
+  const byLang={}; for(const [ext,bytes] of cb.extBytes){ const l=langOf(ext); byLang[l]=(byLang[l]||0)+bytes; }
+  const arr=Object.entries(byLang).sort((a,b)=>b[1]-a[1]).slice(0,12);
+  const palette=['#d0bcff','#efb8c8','#7dd3c0','#ffd8a8','#a5b4ff','#f6a6c1','#9ae6b4','#c4b5fd','#fbbf24','#fb7185','#34d399','#818cf8'];
+  charts.lang=new Chart(ctx,{type:'doughnut',data:{labels:arr.map(x=>x[0]),
+    datasets:[{data:arr.map(x=>x[1]),backgroundColor:arr.map((_,i)=>palette[i%palette.length]),
+      borderColor:css('--surface'),borderWidth:2}]},
+    options:{responsive:true,maintainAspectRatio:false,cutout:'58%',
+      plugins:{legend:{position:'right',labels:{boxWidth:8,padding:6,font:{size:10}}},
+        tooltip:{callbacks:{label:c=>`${c.label}: ${fmtBytes(c.parsed)}`}}}}});
+}
+
+function renderLargestFiles(){
+  const cb=DATA.codebase; const ctx=document.getElementById('cvLargest');
+  if(!cb){ ctx.parentElement.innerHTML='<div class="muted" style="padding:30px 0">—</div>'; return; }
+  const lf=cb.largest;
+  charts.largest=new Chart(ctx,{type:'bar',data:{
+    labels:lf.map(f=>f[0].length>42?'…'+f[0].slice(-41):f[0]),
+    datasets:[{label:'Größe',data:lf.map(f=>f[1]),backgroundColor:'rgba(208,188,255,.85)',borderRadius:4}]},
+    options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,
+      scales:{x:{grid:{color:'#262430'},ticks:{callback:v=>fmtBytes(v)}},y:{grid:{display:false},ticks:{font:{size:10}}}},
+      plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>fmtBytes(c.parsed.x)}}}}});
+}
+
 // ----- Layout -----
 function gridHTML(){
   return `
@@ -1688,6 +1896,33 @@ function gridHTML(){
   <div class="card col-12">
     <h2>Release-Kadenz & Time-to-release</h2><div class="desc" id="cadStats"></div>
     <div class="cv h240"><canvas id="cvCadence"></canvas></div>
+  </div>
+
+  <div class="card col-8">
+    <h2>Team-Entwicklung</h2><div class="desc">Aktive Entwickler pro Monat und After-Hours-/Wochenend-Anteil — wächst das Team, steigt der Druck? (gesamt)</div>
+    <div class="cv h260"><canvas id="cvTeam"></canvas></div>
+  </div>
+  <div class="card col-4">
+    <h2>Bus-Faktor-Trend</h2><div class="desc">Resilienz je Quartal — an wie wenigen hängt die Hälfte der Arbeit? (gesamt)</div>
+    <div class="cv h260"><canvas id="cvBusTrend"></canvas></div>
+  </div>
+
+  <div class="card col-8">
+    <h2>Cross-Modul-Kopplung</h2><div class="desc" id="crossStat"></div>
+    <div class="cv h240"><canvas id="cvCross"></canvas></div>
+  </div>
+  <div class="card col-4">
+    <h2>Verschränkte Module</h2><div class="desc">Modul-Paare, die am häufigsten gemeinsam geändert werden (gesamt)</div>
+    <div class="couple" id="modPairBox"></div>
+  </div>
+
+  <div class="card col-4">
+    <h2>Sprachen heute</h2><div class="desc" id="codebaseStat">Aktuelle Sprach-/Dateityp-Verteilung nach Größe (HEAD)</div>
+    <div class="cv h300"><canvas id="cvLang"></canvas></div>
+  </div>
+  <div class="card col-8">
+    <h2>Größte Dateien</h2><div class="desc">Aktueller Stand in HEAD — Kandidaten für Aufteilung/Refactoring</div>
+    <div class="cv h300"><canvas id="cvLargest"></canvas></div>
   </div>`;
 }
 
@@ -1983,6 +2218,12 @@ function render(days){
   renderTestTrend();
   renderOrphans();
   renderReleaseCadence();
+  renderTeamTrend();
+  renderBusFactorTrend();
+  renderModuleCoupling();
+  renderModulePairs();
+  renderLanguages();
+  renderLargestFiles();
 }
 
 function setAuthor(idx){
@@ -2085,6 +2326,7 @@ def generate_report(url: str, output: str | None = None, token: str | None = Non
         raw = git_log(repo_dir)
         data = parse_log(raw)
         data["tags"] = git_tags(repo_dir)
+        data["codebase"] = git_tree_sizes(repo_dir)
         if not data["commits"]:
             log("WARNUNG: Keine Commits gefunden.")
 
