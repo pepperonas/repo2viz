@@ -34,6 +34,76 @@ HTML-Datei** mit interaktiven Charts und automatischen Analysen — im
 
 Kein Build, keine Dependencies, kein Server: Skript ausführen → HTML im Browser öffnen.
 
+---
+
+## Nutzung
+
+### Schnellstart
+
+```bash
+# 1 · Repo klonen
+git clone https://github.com/pepperonas/repo2viz.git
+cd repo2viz
+
+# 2 · Report für ein beliebiges öffentliches Repo erzeugen
+python3 repo2viz.py https://github.com/pallets/click
+
+# 3 · Die erzeugte  <repo-name>-activity.html  im Browser öffnen
+```
+
+> **Voraussetzung:** Python 3.11+ und `git` im `PATH` — sonst nichts zu installieren.
+> Details unter [Voraussetzungen](#voraussetzungen).
+
+### Aufruf
+
+```bash
+python3 repo2viz.py <repo-url> [-o ausgabe.html] [--token TOKEN] [--keep-clone]
+```
+
+| Option | Beschreibung |
+|--------|--------------|
+| `url` | Repository-URL (GitHub oder Azure DevOps) — **erforderlich** |
+| `-o`, `--output` | Ziel-HTML-Datei (Standard: `<repo-name>-activity.html`) |
+| `--token` | Auth-Token / PAT für private Repos |
+| `--keep-clone` | Temporären Bare-Clone nicht löschen (Debugging) |
+| `--version` | Version ausgeben |
+
+### Beispiele
+
+```bash
+# Öffentliches GitHub-Repo (Ausgabedatei wird automatisch benannt)
+python3 repo2viz.py https://github.com/pallets/click
+
+# Azure DevOps
+python3 repo2viz.py https://dev.azure.com/org/projekt/_git/repo
+
+# Eigene Ausgabedatei
+python3 repo2viz.py https://github.com/me/repo -o report.html
+
+# Privates Repo mit Token
+python3 repo2viz.py https://github.com/me/private --token ghp_xxx
+```
+
+### Authentifizierung privater Repos
+
+Token per `--token` **oder** Umgebungsvariable (in dieser Reihenfolge geprüft):
+
+| Provider | Umgebungsvariablen |
+|----------|--------------------|
+| GitHub | `GITHUB_TOKEN`, `GH_TOKEN` |
+| Azure DevOps | `AZURE_DEVOPS_PAT`, `AZURE_DEVOPS_TOKEN`, `SYSTEM_ACCESSTOKEN` |
+| beliebig | `GIT_TOKEN` (Fallback) |
+
+```bash
+export GITHUB_TOKEN=ghp_xxx
+python3 repo2viz.py https://github.com/me/private
+```
+
+Das Token wird nur für den Clone verwendet, nicht in der HTML gespeichert, und aus
+etwaigen Fehlermeldungen maskiert.
+
+---
+
 ![Übersicht des repo2viz-Dashboards](screenshots/overview.png)
 
 <sub>Beispiel-Dashboard für <code>vuejs/core</code> (7022 Commits · 632 Contributors · 280 Tags).</sub>
@@ -116,69 +186,6 @@ Das Layout ist vollständig responsiv (hier ein iPhone-Viewport):
 * **git** im `PATH`
 * **Internet beim Öffnen der HTML** — Chart.js + Matrix- und Annotation-Plugin werden per
   CDN geladen (mit verifizierten SRI-Integritäts-Hashes als Schutz gegen CDN-Manipulation)
-
----
-
-## Installation
-
-Keine. Skript herunterladen / klonen, fertig:
-
-```bash
-git clone <dieses-repo>
-cd repo2viz
-python3 repo2viz.py --help
-```
-
----
-
-## Nutzung
-
-```bash
-python3 repo2viz.py <repo-url> [-o ausgabe.html] [--token TOKEN] [--keep-clone]
-```
-
-### Beispiele
-
-```bash
-# Öffentliches GitHub-Repo (Ausgabedatei wird automatisch benannt)
-python3 repo2viz.py https://github.com/pallets/click
-
-# Azure DevOps
-python3 repo2viz.py https://dev.azure.com/org/projekt/_git/repo
-
-# Eigene Ausgabedatei
-python3 repo2viz.py https://github.com/me/repo -o report.html
-
-# Privates Repo mit Token
-python3 repo2viz.py https://github.com/me/private --token ghp_xxx
-```
-
-### CLI-Optionen
-
-| Option | Beschreibung |
-|--------|--------------|
-| `url` | Repository-URL (GitHub oder Azure DevOps) — **erforderlich** |
-| `-o`, `--output` | Ziel-HTML-Datei (Standard: `<repo-name>-activity.html`) |
-| `--token` | Auth-Token / PAT für private Repos |
-| `--keep-clone` | Temporären Bare-Clone nicht löschen (Debugging) |
-
-### Authentifizierung privater Repos
-
-Token per `--token` **oder** Umgebungsvariable (in dieser Reihenfolge geprüft):
-
-| Provider | Umgebungsvariablen |
-|----------|--------------------|
-| GitHub | `GITHUB_TOKEN`, `GH_TOKEN` |
-| Azure DevOps | `AZURE_DEVOPS_PAT`, `AZURE_DEVOPS_TOKEN`, `SYSTEM_ACCESSTOKEN` |
-| beliebig | `GIT_TOKEN` (Fallback) |
-
-```bash
-export GITHUB_TOKEN=ghp_xxx
-python3 repo2viz.py https://github.com/me/private
-```
-
-Das Token wird nur für den Clone verwendet, nicht in der HTML gespeichert, und aus
-etwaigen Fehlermeldungen maskiert.
 
 ---
 
