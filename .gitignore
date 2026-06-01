@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Generierte Reports / Test-Artefakte
+*-activity.html
+vue.html
+smoke.html
+/tmp/
+
+# OS / Editor
+.DS_Store
+*.swp
+.idea/
+.vscode/
