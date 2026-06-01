@@ -18,6 +18,8 @@ Features
 * Commit-Typen (Conventional Commits) und Commit-Groessen-Verteilung
 * Hotspots/Wissensrisiko, Verzeichnis-Bus-Faktor, Co-Change-Kopplung
 * Top-Dateien & Dateityp-Verteilung
+* PO-/Delivery-Dashboard (Investment-Mix, Throughput, Cycle-Time, Roadmap-Risiko,
+  Rework, Hygiene) mit optionaler Azure-DevOps-Work-Item-Anreicherung
 * Umschaltbare Zeitraeume (30 T / 90 T / 180 T / 1 J / Gesamt) - clientseitig, instant
 
 Nutzung
@@ -31,6 +33,7 @@ Nur Python-Standardbibliothek + git erforderlich.
 """
 
 import argparse
+import base64
 import datetime as dt
 import json
 import os
@@ -39,10 +42,12 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import urllib.error
+import urllib.request
 from collections import defaultdict
 from urllib.parse import quote, urlparse
 
-__version__ = "2.2.0"
+__version__ = "2.3.0"
 
 # Datensatz-Trenner (ASCII-Steuerzeichen, kommen in git-Metadaten praktisch nie vor)
 REC = "\x1e"   # record separator
@@ -57,6 +62,9 @@ def detect_provider(url: str) -> str:
     if "github" in host:
         return "github"
     if "dev.azure.com" in host or "visualstudio.com" in host:
+        return "azure"
+    # Self-hosted Azure DevOps Server: erkennbar am /_git/-Pfadsegment
+    if "/_git/" in (urlparse(url).path or ""):
         return "azure"
     return "generic"
 
@@ -106,6 +114,124 @@ def repo_display_name(url: str) -> str:
     if len(parts) >= 2:
         return "/".join(parts[-2:])
     return path or "repository"
+
+
+# --------------------------------------------------------------------------- #
+#  Azure DevOps Work-Item-Anreicherung (PO-/Delivery-Dashboard)
+# --------------------------------------------------------------------------- #
+# Referenzen in Commit-Messages: "#1234" und "AB#1234"
+_WI_RE = re.compile(r"(?:AB)?#(\d{1,7})\b", re.IGNORECASE)
+
+
+def extract_wi_ids(text: str) -> list[int]:
+    """Findet Work-Item-/Issue-IDs (#123, AB#123) in einer Commit-Message."""
+    out = []
+    for m in _WI_RE.finditer(text or ""):
+        try:
+            out.append(int(m.group(1)))
+        except ValueError:
+            pass
+    # Reihenfolge erhalten, Duplikate raus
+    seen = set()
+    return [i for i in out if not (i in seen or seen.add(i))]
+
+
+def ado_api_base(url: str) -> str | None:
+    """Leitet die projektbezogene Azure-DevOps-REST-Basis aus der Repo-URL ab.
+
+    Cloud:      https://dev.azure.com/{org}/{project}/_git/{repo}
+                -> https://dev.azure.com/{org}/{project}
+    Legacy:     https://{org}.visualstudio.com/{project}/_git/{repo}
+                -> https://{org}.visualstudio.com/{project}
+    Self-hosted https://server/tfs/{collection}/{project}/_git/{repo}
+                -> https://server/tfs/{collection}/{project}
+    Funktioniert, weil der Pfad bis vor "/_git/" exakt der Projekt-Scope ist.
+    """
+    parts = urlparse(url)
+    if parts.scheme not in ("http", "https") or "/_git/" not in (parts.path or ""):
+        return None
+    proj_path = parts.path.split("/_git/", 1)[0].strip("/")
+    if not proj_path:
+        return None
+    netloc = parts.hostname or ""
+    if parts.port:
+        netloc += f":{parts.port}"
+    return f"{parts.scheme}://{netloc}/{proj_path}"
+
+
+# States, die in Azure DevOps üblicherweise "abgeschlossen" bedeuten
+_CLOSED_STATES = {"closed", "done", "completed", "resolved", "removed"}
+# Work-Item-Typen, die als "Wertschöpfung / Feature" zählen
+_FEATURE_TYPES = {"user story", "product backlog item", "feature", "epic",
+                  "requirement", "task", "issue"}
+_BUG_TYPES = {"bug", "defect"}
+
+
+def _ado_request(api_base: str, ids: list[int], fields: list[str], pat: str,
+                 api_version: str) -> list[dict]:
+    """Ein einzelner workitemsbatch-POST (max. 200 IDs)."""
+    endpoint = f"{api_base}/_apis/wit/workitemsbatch?api-version={api_version}"
+    body = json.dumps({"ids": ids, "fields": fields, "errorPolicy": "omit"}).encode()
+    auth = base64.b64encode(f":{pat}".encode()).decode()
+    req = urllib.request.Request(endpoint, data=body, method="POST", headers={
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "Authorization": f"Basic {auth}",
+    })
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        payload = json.loads(resp.read().decode("utf-8", "replace"))
+    return payload.get("value", [])
+
+
+def enrich_work_items(api_base: str, ids: list[int], pat: str, api_version: str,
+                      log=lambda _m: None) -> dict:
+    """Holt Work-Item-Metadaten (Typ, State, Parent, Area, Iteration, Tags, Titel).
+
+    Verfolgt zusätzlich die Parent-Kette (für Epic-Rollup). Defensiv: bei jedem
+    Fehler wird geloggt und das bis dahin Geladene zurückgegeben (Graceful
+    Degradation). Das PAT taucht in keiner Meldung auf.
+    """
+    fields = ["System.Id", "System.WorkItemType", "System.Title", "System.State",
+              "System.AreaPath", "System.IterationPath", "System.Tags", "System.Parent"]
+    meta: dict[int, dict] = {}
+    to_fetch = list(dict.fromkeys(ids))
+    level = 0
+    try:
+        while to_fetch and level < 8:
+            batch_ids = [i for i in to_fetch if i not in meta]
+            if not batch_ids:
+                break
+            log(f"Azure DevOps: lade {len(batch_ids)} Work Items (Ebene {level + 1}) …")
+            parents = []
+            for start in range(0, len(batch_ids), 200):
+                chunk = batch_ids[start:start + 200]
+                for wi in _ado_request(api_base, chunk, fields, pat, api_version):
+                    f = wi.get("fields", {})
+                    wid = wi.get("id")
+                    if wid is None:
+                        continue
+                    parent = f.get("System.Parent")
+                    meta[int(wid)] = {
+                        "type": f.get("System.WorkItemType", ""),
+                        "title": f.get("System.Title", ""),
+                        "state": f.get("System.State", ""),
+                        "area": f.get("System.AreaPath", ""),
+                        "iteration": f.get("System.IterationPath", ""),
+                        "tags": f.get("System.Tags", ""),
+                        "parent": int(parent) if isinstance(parent, int) else None,
+                    }
+                    if isinstance(parent, int):
+                        parents.append(parent)
+            # Eltern der nächsten Ebene nachladen (für Epic-Rollup)
+            to_fetch = [p for p in parents if p not in meta]
+            level += 1
+    except urllib.error.HTTPError as e:
+        code = e.code
+        hint = " — PAT/Berechtigung prüfen (Scope 'Work Items: Read')" if code in (401, 403) else ""
+        log(f"WARNUNG: Azure-DevOps-API HTTP {code}{hint}. Fahre ohne Work-Item-Metadaten fort.")
+    except (urllib.error.URLError, TimeoutError, ValueError) as e:
+        log(f"WARNUNG: Azure-DevOps-API nicht erreichbar ({type(e).__name__}). Fahre ohne Metadaten fort.")
+    return meta
 
 
 # --------------------------------------------------------------------------- #
@@ -196,6 +322,11 @@ def parse_log(raw: str):
     couples: dict[tuple, int] = defaultdict(int)                           # (fileA,fileB) -> gemeinsame Commits
     msg_len_total = 0
     msg_count = 0
+    # PO-/Delivery-Auswertung
+    wi_stats: dict[int, list] = defaultdict(lambda: [0, 0, 0, 10**9, -1, set()])  # id -> [commits, ins, del, first, last, {authors}]
+    with_wi = 0
+    conventional = 0
+    sonst_idx = _CAT_INDEX["sonstige"]
 
     records = raw.split(REC)
     for rec in records:
@@ -226,6 +357,11 @@ def parse_log(raw: str):
         hour = local.hour
         cat = classify_commit(subject)
         msg_len_total += len(subject); msg_count += 1
+        if cat != sonst_idx:
+            conventional += 1
+        wi_ids = extract_wi_ids(subject)
+        if wi_ids:
+            with_wi += 1
 
         c_ins = c_del = 0
         touched_files = []
@@ -273,7 +409,16 @@ def parse_log(raw: str):
                 for j in range(i + 1, len(uniq)):
                     couples[(uniq[i], uniq[j])] += 1
 
-        commits.append([day, weekday, hour, a_idx, c_ins, c_del, cat])
+        for wid in wi_ids:
+            s = wi_stats[wid]
+            s[0] += 1; s[1] += c_ins; s[2] += c_del
+            if day < s[3]: s[3] = day
+            if day > s[4]: s[4] = day
+            s[5].add(a_idx)
+
+        # commit-Record: [day, weekday, hour, authorIdx, ins, del, msgCat, wiIds]
+        # (poClass [8] wird in build_po() ergaenzt, sobald WI-Typen bekannt sind)
+        commits.append([day, weekday, hour, a_idx, c_ins, c_del, cat, wi_ids])
 
     # Top-Dateien (nach Aenderungs-Commits) & Top-Dateitypen (nach Churn)
     top_files = sorted(file_changes.items(), key=lambda kv: kv[1][0], reverse=True)[:15]
@@ -308,6 +453,125 @@ def parse_log(raw: str):
         "coupling": coupling,
         "cats": COMMIT_CATS,
         "avgMsgLen": avg_msg,
+        # PO-Rohdaten (von build_po weiterverarbeitet)
+        "_wiStats": wi_stats,
+        "_withWI": with_wi,
+        "_conventional": conventional,
+        "_totalCommits": len(commits),
+    }
+
+
+# --------------------------------------------------------------------------- #
+#  PO-/Delivery-Auswertung (übersetzt Engineering-Daten in PO-Sprache)
+# --------------------------------------------------------------------------- #
+PO_CLASSES = ["Feature/Story", "Bug", "Tech-Debt", "Doku", "Sonstige"]
+_PO_CAT_FALLBACK = {  # Conventional-Commit-Kategorie -> PO-Klasse (Index)
+    "feat": 0, "fix": 1, "docs": 3, "perf": 2, "refactor": 2, "style": 2,
+    "test": 2, "build": 2, "ci": 2, "chore": 2, "revert": 2, "sonstige": 4,
+}
+
+
+def _po_class(commit: list, wi_meta: dict) -> int:
+    """Bestimmt die PO-Klasse eines Commits — bevorzugt aus dem Work-Item-Typ,
+    sonst als Fallback aus der Conventional-Commit-Kategorie."""
+    for wid in commit[7]:
+        m = wi_meta.get(wid)
+        if m and m.get("type"):
+            t = m["type"].strip().lower()
+            if t in _BUG_TYPES:
+                return 1
+            if t in _FEATURE_TYPES:
+                return 0
+            return 4
+    return _PO_CAT_FALLBACK.get(COMMIT_CATS[commit[6]], 4)
+
+
+def build_po(data: dict, wi_meta: dict, provider: str) -> dict:
+    """Erzeugt die PO-Payload und ergänzt jeden Commit um seine PO-Klasse [8]."""
+    commits = data["commits"]
+    enriched = bool(wi_meta)
+
+    for c in commits:
+        c.append(_po_class(c, wi_meta))
+
+    # Label-Tabellen mit stabilen Indizes
+    def _interner():
+        labels, index = [], {}
+        def add(val):
+            if val not in index:
+                index[val] = len(labels)
+                labels.append(val)
+            return index[val]
+        return labels, add
+    types, t_add = _interner()
+    states, s_add = _interner()
+    areas, a_add = _interner()
+    epics, e_add = _interner()
+
+    def epic_of(wid):
+        seen, cur, depth = set(), wi_meta.get(wid, {}).get("parent"), 0
+        while cur is not None and cur not in seen and depth < 8:
+            seen.add(cur)
+            m = wi_meta.get(cur)
+            if not m:
+                break
+            if m.get("type", "").strip().lower() == "epic":
+                return m.get("title") or f"Epic #{cur}"
+            cur, depth = m.get("parent"), depth + 1
+        return None
+
+    wi_stats = data.get("_wiStats", {})
+    items = []
+    area_agg: dict[str, list] = defaultdict(lambda: [0, 0, set(), 0])   # area -> [commits, churn, {authors}, bugCommits]
+    epic_agg: dict[str, list] = defaultdict(lambda: [0, 0, set()])      # epic -> [commits, churn, {authors}]
+
+    for wid, st in wi_stats.items():
+        m = wi_meta.get(wid, {})
+        wtype = m.get("type", "")
+        is_bug = wtype.strip().lower() in _BUG_TYPES
+        state = m.get("state", "")
+        area = m.get("area", "")
+        ep = epic_of(wid) if enriched else None
+        type_idx = t_add(wtype) if wtype else -1
+        state_idx = s_add(state) if state else -1
+        area_idx = a_add(area) if area else -1
+        epic_idx = e_add(ep) if ep else -1
+        closed = 1 if state.strip().lower() in _CLOSED_STATES else 0
+        commits_n, ins_n, del_n, first, last, authset = st
+        items.append([wid, type_idx, state_idx, epic_idx, area_idx,
+                      commits_n, ins_n, del_n, first, last, len(authset), closed])
+        if enriched and area:
+            ag = area_agg[area]
+            ag[0] += commits_n; ag[1] += ins_n + del_n; ag[2] |= authset
+            if is_bug:
+                ag[3] += commits_n
+        if ep:
+            eg = epic_agg[ep]
+            eg[0] += commits_n; eg[1] += ins_n + del_n; eg[2] |= authset
+
+    # Größe bändigen (sehr ref-reiche GitHub-Repos): Top-Items nach Aktivität
+    items.sort(key=lambda it: it[5], reverse=True)
+    items = items[:5000]
+
+    area_list = sorted(([a, v[0], v[1], len(v[2]), v[3]] for a, v in area_agg.items()),
+                       key=lambda r: r[1], reverse=True)[:15]
+    epic_list = sorted(([e, v[0], v[1], len(v[2])] for e, v in epic_agg.items()),
+                       key=lambda r: r[1], reverse=True)[:15]
+
+    return {
+        "enabled": True,
+        "enriched": enriched,
+        "provider": provider,
+        "refLabel": "Work Item" if provider == "azure" else "Issue",
+        "classes": PO_CLASSES,
+        "types": types, "states": states, "areas": areas, "epics": epics,
+        "items": items,
+        "areaAgg": area_list,
+        "epicAgg": epic_list,
+        "withWI": data.get("_withWI", 0),
+        "conventional": data.get("_conventional", 0),
+        "totalCommits": data.get("_totalCommits", len(commits)),
+        "closedStates": sorted(_CLOSED_STATES),
     }
 
 
@@ -326,6 +590,7 @@ def build_html(data: dict, meta: dict) -> str:
         "cats": data["cats"],
         "avgMsgLen": data["avgMsgLen"],
         "tags": data.get("tags", []),
+        "po": data.get("po"),
         "meta": meta,
     }
     blob = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
@@ -478,6 +743,9 @@ header{display:flex;flex-wrap:wrap;align-items:center;gap:16px;margin:8px 0 28px
 .couple .cnt{flex:none;background:var(--primary-c);color:var(--primary);
   border-radius:999px;padding:2px 10px;font-size:.74rem;font-variation-settings:'wght' 600}
 .muted{color:var(--on-surface-var)}
+.viewtoggle button{padding:7px 14px}
+.notice{background:#2c2433;border:1px solid #4f378b}
+.notice b{color:var(--primary)}
 
 footer{margin-top:40px;text-align:center;color:var(--on-surface-var);font-size:.78rem;
   border-top:1px solid #2a282f;padding-top:20px}
@@ -519,6 +787,10 @@ a{color:var(--primary)}
     </div>
     <div class="spacer"></div>
     <div class="controls">
+      <div class="ranges viewtoggle" id="viewToggle" style="display:none">
+        <button data-v="eng" class="active">Engineering</button>
+        <button data-v="po">Product / Delivery</button>
+      </div>
       <select id="contribSel" class="csel" title="Contributor filtern"></select>
       <div class="ranges" id="ranges">
         <button data-d="30">30 T</button>
@@ -1197,7 +1469,213 @@ function gridHTML(){
   </div>`;
 }
 
-let curDays=0, curAuthor=null, selectedDay=null, curRows=[];
+// ====================================================================== //
+//  PO-/Delivery-Dashboard
+// ====================================================================== //
+const PO_COLORS=['#7ddfa0','#ff9b9b','#ffd8a8','#a5b4ff','#4a4754'];
+const SONST_IDX = (DATA.cats||[]).indexOf('sonstige');
+
+function poDistinctWIs(rows){ const s=new Set();
+  for(const c of rows){ if(c[7]) for(const id of c[7]) s.add(id); } return s; }
+
+function renderPOKPIs(rows){
+  const po=DATA.po, total=rows.length;
+  const cls=new Array(po.classes.length).fill(0);
+  let ins=0,del=0,withWi=0,conv=0;
+  for(const c of rows){ cls[c[8]]++; ins+=c[4]; del+=c[5];
+    if(c[7]&&c[7].length) withWi++; if(c[6]!==SONST_IDX) conv++; }
+  const bugPct=total?Math.round(cls[1]/total*100):0;
+  const reworkPct=(ins+del)?Math.round(del/(ins+del)*100):0;
+  const tracePct=total?Math.round(withWi/total*100):0;
+  const wis=poDistinctWIs(rows);
+  // Median-Cycle-Time aus Items, deren letzte Aktivität im Zeitraum liegt
+  const from=curDays? (MAXDAY-curDays+1):-1;
+  const cyc=[]; for(const it of po.items){ if(from<0||it[9]>=from) cyc.push(it[9]-it[8]); }
+  cyc.sort((a,b)=>a-b);
+  const med=cyc.length? cyc[Math.floor((cyc.length-1)/2)] : null;
+  const riskAreas=po.areaAgg.filter(a=>a[3]===1).length;
+
+  const cards=[
+    {l:'Bug-Anteil',v:bugPct+'%',m:'der Code-Aktivität',cls:bugPct>=30?'neg':''},
+    {l:po.refLabel+'s aktiv',v:wis.size,m:'mit Code-Aktivität'},
+    {l:'Median-Cycle-Time',v:med==null?'–':med+' T',m:'erster→letzter Commit'},
+    {l:'Traceability',v:tracePct+'%',m:'mit '+po.refLabel+'-Bezug',cls:tracePct<50?'neg':'pos'},
+    {l:'Rework-Anteil',v:reworkPct+'%',m:'gelöschte/gesamte Zeilen'},
+    po.enriched
+      ? {l:'Roadmap-Risiko',v:riskAreas,m:'Bereiche an 1 Person',cls:riskAreas>0?'neg':'pos'}
+      : {l:'Conventional',v:(total?Math.round(conv/total*100):0)+'%',m:'typisierte Commits'},
+  ];
+  return `<div class="kpis">${cards.map(c=>`
+    <div class="kpi ${c.cls||''}"><div class="label">${c.l}</div>
+      <div class="val">${c.v}</div><div class="meta">${c.m||''}</div></div>`).join('')}</div>`;
+}
+
+function poGridHTML(po){
+  const hasRoadmap = po.enriched;
+  const areaSrc = po.epicAgg.length ? 'Epic' : 'Area Path';
+  const hasArea = po.areaAgg.length>0 || po.epicAgg.length>0;
+  const notice = po.enriched ? '' : `<div class="card col-12 notice">
+    <b>Eingeschränkte Ansicht.</b> Ohne Azure-DevOps-PAT (oder bei GitHub) basiert die
+    Auswertung nur auf den aus Commit-Messages geparsten IDs und Conventional-Commit-Typen
+    — ohne Work-Item-Typen, States, Epics oder Area Paths. Für die volle Delivery-Sicht ein
+    PAT setzen (<code>AZURE_DEVOPS_PAT</code>) bzw. ein Azure-DevOps-Repo verwenden.</div>`;
+  return `
+  ${notice}
+  <div class="card col-4">
+    <h2>Investment-Mix</h2><div class="desc">Wo floss die Kapazität hin? Anteil der Code-Aktivität nach Arbeitsart.</div>
+    <div class="cv h260"><canvas id="cvPoMix"></canvas></div>
+  </div>
+  <div class="card col-8">
+    <h2>Investment über Zeit</h2><div class="desc">Verschiebt sich der Fokus zwischen Feature, Bug und Tech-Debt?</div>
+    <div class="cv h260"><canvas id="cvPoTrend"></canvas></div>
+  </div>
+
+  <div class="card col-8">
+    <h2>Delivery-Throughput</h2><div class="desc">${po.refLabel}s mit Code-Aktivität pro Zeiteinheit — Proxy für den Liefer-Durchsatz (Velocity-Trend).</div>
+    <div class="cv h260"><canvas id="cvPoThroughput"></canvas></div>
+  </div>
+  <div class="card col-4">
+    <h2>Cycle-Time</h2><div class="desc">Wie lange brauchen ${po.refLabel}s typischerweise von erster bis letzter Code-Berührung?</div>
+    <div class="cv h260"><canvas id="cvPoCycle"></canvas></div>
+  </div>
+
+  <div class="card col-12">
+    <h2>Roadmap-Risiko</h2><div class="desc">Welche Roadmap-Bereiche hängen an einer einzigen Person oder sind instabil (viel Nacharbeit)?</div>
+    ${hasRoadmap ? `<div class="tscroll"><table class="ctable"><thead><tr>
+      <th>Bereich (Area Path)</th><th class="num">Commits</th><th class="num">Churn</th>
+      <th class="num">Contributors</th><th class="num">Bug-Anteil</th><th>Risiko</th>
+    </tr></thead><tbody id="poAreaBody"></tbody></table></div>`
+      : `<div class="muted">Erfordert Work-Item-Metadaten (Azure DevOps + PAT). Aktuell nicht verfügbar.</div>`}
+  </div>
+
+  <div class="card col-${hasArea?'4':'12'}">
+    <h2>Prozess-Hygiene</h2><div class="desc">Anteil der Commits mit ${po.refLabel}-Bezug — Traceability & Daten-Qualität für Reporting.</div>
+    <div class="cv h260"><canvas id="cvPoHygiene"></canvas></div>
+  </div>
+  ${hasArea ? `<div class="card col-8">
+    <h2>Investment nach ${areaSrc}</h2><div class="desc">Kapazität (Code-Churn) je Roadmap-Bereich — wohin fließt die Arbeit strukturell?</div>
+    <div class="cv h260"><canvas id="cvPoArea"></canvas></div>
+  </div>` : ''}`;
+}
+
+function renderPoMix(rows){
+  const po=DATA.po; const cnt=new Array(po.classes.length).fill(0), ch=new Array(po.classes.length).fill(0);
+  for(const c of rows){ cnt[c[8]]++; ch[c[8]]+=c[4]+c[5]; }
+  charts.poMix=new Chart(document.getElementById('cvPoMix'),{type:'doughnut',data:{
+    labels:po.classes,datasets:[{data:cnt,backgroundColor:PO_COLORS,
+      borderColor:css('--surface'),borderWidth:2}]},
+    options:{responsive:true,maintainAspectRatio:false,cutout:'58%',
+      plugins:{legend:{position:'right',labels:{boxWidth:8,padding:8,font:{size:11}}},
+        tooltip:{callbacks:{label:c=>{const t=rows.length||1;
+          return `${c.label}: ${c.parsed} Commits (${Math.round(c.parsed/t*100)}%) · ${fmt(ch[c.dataIndex])} Zeilen`;}}}}}});
+}
+
+function renderPoTrend(rows,days){
+  const po=DATA.po; const kind=bucketKey(days); const m={};
+  for(const c of rows){ const k=bucketOf(c[0],kind); (m[k]||(m[k]=new Array(po.classes.length).fill(0)))[c[8]]++; }
+  const keys=Object.keys(m).map(Number).sort((a,b)=>a-b);
+  const labels=keys.map(k=>bucketLabel(k,kind));
+  const ds=po.classes.map((name,i)=>({label:name,data:keys.map(k=>m[k][i]),
+    backgroundColor:PO_COLORS[i],stack:'po',borderRadius:2}));
+  charts.poTrend=new Chart(document.getElementById('cvPoTrend'),{type:'bar',data:{labels,datasets:ds},
+    options:{responsive:true,maintainAspectRatio:false,
+      scales:{x:{stacked:true,grid:{display:false},ticks:{maxRotation:0,autoSkipPadding:18}},
+        y:{stacked:true,grid:{color:'#262430'}}},
+      plugins:{legend:{position:'top',align:'end'}}}});
+}
+
+function renderPoThroughput(rows,days){
+  const kind=bucketKey(days); const m={};
+  for(const c of rows){ if(!c[7]||!c[7].length) continue; const k=bucketOf(c[0],kind);
+    const s=m[k]||(m[k]=new Set()); for(const id of c[7]) s.add(id); }
+  const keys=Object.keys(m).map(Number).sort((a,b)=>a-b);
+  const labels=keys.map(k=>bucketLabel(k,kind));
+  const data=keys.map(k=>m[k].size);
+  const ctx=document.getElementById('cvPoThroughput');
+  const grad=ctx.getContext('2d').createLinearGradient(0,0,0,260);
+  grad.addColorStop(0,'rgba(125,223,160,.35)'); grad.addColorStop(1,'rgba(125,223,160,0)');
+  charts.poThr=new Chart(ctx,{type:'line',data:{labels,datasets:[{
+    label:DATA.po.refLabel+'s mit Aktivität',data,borderColor:css('--pos'),
+    backgroundColor:grad,fill:true,tension:.3,pointRadius:0,borderWidth:2}]},
+    options:{responsive:true,maintainAspectRatio:false,
+      scales:{x:{grid:{display:false},ticks:{maxRotation:0,autoSkipPadding:18}},
+        y:{beginAtZero:true,grid:{color:'#262430'},ticks:{precision:0}}},
+      plugins:{legend:{display:false}}}});
+}
+
+function renderPoCycle(rows){
+  const po=DATA.po; const from=curDays? (MAXDAY-curDays+1):-1;
+  const buckets=[[0,'1 Tag'],[1,'1–2 T'],[3,'3–7 T'],[8,'8–14 T'],[15,'15–30 T'],[31,'> 30 T']];
+  const counts=new Array(buckets.length).fill(0); let n=0;
+  for(const it of po.items){ if(from>=0 && it[9]<from) continue;
+    const d=it[9]-it[8]; let bi=0; for(let i=0;i<buckets.length;i++) if(d>=buckets[i][0]) bi=i;
+    counts[bi]++; n++; }
+  charts.poCycle=new Chart(document.getElementById('cvPoCycle'),{type:'bar',data:{
+    labels:buckets.map(b=>b[1]),datasets:[{label:po.refLabel+'s',data:counts,
+      backgroundColor:'rgba(208,188,255,.85)',borderRadius:4}]},
+    options:{responsive:true,maintainAspectRatio:false,
+      scales:{x:{grid:{display:false},title:{display:true,text:'Spanne erster→letzter Commit'}},
+        y:{beginAtZero:true,grid:{color:'#262430'},ticks:{precision:0}}},
+      plugins:{legend:{display:false},
+        tooltip:{callbacks:{footer:()=> n? '':'keine Items im Zeitraum'}}}}});
+}
+
+function renderPoRoadmap(){
+  const po=DATA.po; if(!po.enriched) return;
+  const risk=(authors,bugPct)=> authors===1?['Wissensrisiko','risk-hi']
+    : bugPct>=40?['instabil','risk-md']:['ok','risk-lo'];
+  const body=po.areaAgg.map(a=>{const[area,commits,churn,authors,bug]=a;
+    const bugPct=commits?Math.round(bug/commits*100):0; const[txt,cls]=risk(authors,bugPct);
+    const short=area.length>40?'…'+area.slice(-39):area;
+    return `<tr><td class="path">${short}</td>
+      <td class="num">${commits}</td><td class="num">${fmt(churn)}</td>
+      <td class="num">${authors}</td><td class="num">${bugPct}%</td>
+      <td><span class="pill ${cls}">${txt}</span></td></tr>`;}).join('');
+  document.getElementById('poAreaBody').innerHTML=body||'<tr><td colspan="6" class="muted">Keine Bereiche mit Work-Item-Bezug gefunden.</td></tr>';
+}
+
+function renderPoHygiene(rows){
+  const po=DATA.po; let withWi=0; for(const c of rows) if(c[7]&&c[7].length) withWi++;
+  const without=rows.length-withWi;
+  charts.poHyg=new Chart(document.getElementById('cvPoHygiene'),{type:'doughnut',data:{
+    labels:['mit '+po.refLabel+'-Bezug','ohne Bezug'],
+    datasets:[{data:[withWi,without],backgroundColor:['#7ddfa0','#4a4754'],
+      borderColor:css('--surface'),borderWidth:2}]},
+    options:{responsive:true,maintainAspectRatio:false,cutout:'62%',
+      plugins:{legend:{position:'bottom',labels:{boxWidth:8,padding:8}},
+        tooltip:{callbacks:{label:c=>{const t=rows.length||1;
+          return `${c.label}: ${c.parsed} (${Math.round(c.parsed/t*100)}%)`;}}}}}});
+}
+
+function renderPoArea(){
+  const po=DATA.po;
+  const useEpic=po.epicAgg.length>0;
+  const src=useEpic?po.epicAgg:po.areaAgg;
+  if(!src.length) return;
+  const labels=src.map(r=>{const s=String(r[0]); return s.length>30?'…'+s.slice(-29):s;});
+  charts.poArea=new Chart(document.getElementById('cvPoArea'),{type:'bar',data:{labels,
+    datasets:[{label:'Churn',data:src.map(r=>r[2]),backgroundColor:'rgba(165,180,255,.85)',borderRadius:4}]},
+    options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,
+      scales:{x:{grid:{color:'#262430'},ticks:{callback:v=>fmt(v)}},y:{grid:{display:false},ticks:{font:{size:10}}}},
+      plugins:{legend:{display:false},
+        tooltip:{callbacks:{afterLabel:c=>`${src[c.dataIndex][1]} Commits · ${src[c.dataIndex][3]} Contributors`}}}}});
+}
+
+function renderPO(rows, days){
+  const po=DATA.po;
+  document.getElementById('app').innerHTML =
+    `<div id="poKpi"></div><div class="grid">${poGridHTML(po)}</div>`;
+  document.getElementById('poKpi').innerHTML = renderPOKPIs(rows);
+  renderPoMix(rows);
+  renderPoTrend(rows,days);
+  renderPoThroughput(rows,days);
+  renderPoCycle(rows);
+  renderPoRoadmap();
+  renderPoHygiene(rows);
+  renderPoArea();
+}
+
+let curDays=0, curAuthor=null, selectedDay=null, curRows=[], curView='eng';
 function authorFilter(rows){ return curAuthor==null ? rows : rows.filter(c=>c[3]===curAuthor); }
 
 function render(days){
@@ -1209,6 +1687,14 @@ function render(days){
     return;
   }
   const rows=filtered(days);            // nur Zeitraum (für Contributor-Übersicht)
+  const cs=document.getElementById('contribSel');
+  // PO-/Delivery-Ansicht ist team-zentriert -> Contributor-Filter dort ausblenden
+  if(cs) cs.style.display = (curView==='po') ? 'none' : '';
+  if(curView==='po'){
+    if(!rows.length){ app.innerHTML='<div class="empty"><h2>Keine Aktivität im gewählten Zeitraum</h2></div>'; return; }
+    renderPO(rows, days);
+    return;
+  }
   const arows=authorFilter(rows);       // Zeitraum + Contributor
   curRows=arows;
   if(!arows.length){
@@ -1265,9 +1751,23 @@ function initContribSel(){
   sel.addEventListener('change',()=>setAuthor(sel.value===''?null:+sel.value));
 }
 
+function initViewToggle(){
+  const vt=document.getElementById('viewToggle');
+  if(!(DATA.po && DATA.po.enabled)) return;     // ohne PO-Daten gar nicht anzeigen
+  vt.style.display='';
+  vt.addEventListener('click',e=>{
+    const b=e.target.closest('button'); if(!b)return;
+    [...vt.children].forEach(x=>x.classList.remove('active'));
+    b.classList.add('active');
+    curView=b.dataset.v;
+    render(curDays);
+  });
+}
+
 initHeader();
 initRanges();
 initContribSel();
+initViewToggle();
 render(0);
 </script>
 </body>
@@ -1281,12 +1781,29 @@ def default_output_name(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-") + "-activity.html"
 
 
+def _collect_wi_ids(commits) -> list[int]:
+    ids = set()
+    for c in commits:
+        for wid in c[7]:
+            ids.add(wid)
+    return sorted(ids)
+
+
+def _anonymize_authors(data: dict) -> None:
+    """Ersetzt Contributor-Namen durch Pseudonyme (DSGVO-freundliches Teilen)."""
+    data["authors"] = [f"Contributor {i + 1}" for i in range(len(data["authors"]))]
+
+
 def generate_report(url: str, output: str | None = None, token: str | None = None,
-                    keep_clone: bool = False, log=lambda _m: None) -> dict:
+                    keep_clone: bool = False, anonymize: bool = False,
+                    enable_po: bool = True, ado_api_version: str = "7.1",
+                    log=lambda _m: None) -> dict:
     """Klont das Repo, analysiert die Historie und schreibt die HTML-Datei.
 
     `log` ist ein Callback `(str) -> None` für Fortschrittsmeldungen (z. B. print
     oder ein Qt-Signal). Gibt ein Ergebnis-Dict zurück (output, commits, authors, tags).
+    Bei Azure-DevOps-Repos mit PAT werden Work-Item-Metadaten für das PO-Dashboard
+    nachgeladen (Graceful Degradation, falls das fehlschlägt).
     """
     provider = detect_provider(url)
     tok = resolve_token(provider, token)
@@ -1298,6 +1815,7 @@ def generate_report(url: str, output: str | None = None, token: str | None = Non
 
     tmp = tempfile.mkdtemp(prefix="repo2viz-")
     repo_dir = os.path.join(tmp, "repo.git")
+    enriched = False
     try:
         log("Klone Repository (bare) …")
         clone_repo(clone_url, repo_dir)
@@ -1307,12 +1825,30 @@ def generate_report(url: str, output: str | None = None, token: str | None = Non
         data["tags"] = git_tags(repo_dir)
         if not data["commits"]:
             log("WARNUNG: Keine Commits gefunden.")
+
+        # PO-/Delivery-Dashboard
+        if enable_po:
+            wi_meta = {}
+            wi_ids = _collect_wi_ids(data["commits"])
+            api_base = ado_api_base(url) if provider == "azure" else None
+            if api_base and tok and wi_ids:
+                wi_meta = enrich_work_items(api_base, wi_ids, tok, ado_api_version, log=log)
+                enriched = bool(wi_meta)
+            elif provider == "azure" and not tok and wi_ids:
+                log("Hinweis: kein PAT — PO-Dashboard ohne Work-Item-Metadaten (für volle Auswertung PAT setzen).")
+            data["po"] = build_po(data, wi_meta, provider)
+
+        if anonymize:
+            _anonymize_authors(data)
+
         meta = {
             "name": name,
             "url": url,
             "provider": provider,
             "merges": False,
             "version": __version__,
+            "anonymized": anonymize,
+            "poEnriched": enriched,
             "generated": dt.datetime.now().strftime("%Y-%m-%d %H:%M"),
         }
         log("Erzeuge HTML …")
@@ -1334,8 +1870,10 @@ def generate_report(url: str, output: str | None = None, token: str | None = Non
         "commits": len(data["commits"]),
         "authors": len(data["authors"]),
         "tags": len(data.get("tags", [])),
+        "poEnriched": enriched,
     }
-    log(f"{result['commits']} Commits · {result['authors']} Contributors · {result['tags']} Tags")
+    log(f"{result['commits']} Commits · {result['authors']} Contributors · {result['tags']} Tags"
+        + ("  · PO: Work Items angereichert" if enriched else ""))
     return result
 
 
@@ -1349,11 +1887,20 @@ def main():
     ap.add_argument("-o", "--output", help="Ziel-HTML-Datei")
     ap.add_argument("--token", help="Auth-Token/PAT für private Repos (sonst aus Env)")
     ap.add_argument("--keep-clone", action="store_true", help="Temporären Clone nicht löschen")
+    ap.add_argument("--anonymize", action="store_true",
+                    help="Contributor-Namen im HTML pseudonymisieren (DSGVO-freundlich)")
+    ap.add_argument("--no-po", action="store_true",
+                    help="PO-/Delivery-Dashboard nicht erzeugen")
+    ap.add_argument("--ado-api-version", default="7.1",
+                    help="Azure-DevOps-REST-api-version (Default 7.1; on-prem ggf. 6.0/5.0)")
     ap.add_argument("--version", action="version", version=f"repo2viz {__version__}")
     args = ap.parse_args()
 
-    res = generate_report(args.url, args.output, args.token, args.keep_clone,
-                          log=lambda m: print("  -> " + m if not m.startswith(("Repository", "Provider")) else m, flush=True))
+    res = generate_report(
+        args.url, args.output, args.token, args.keep_clone,
+        anonymize=args.anonymize, enable_po=not args.no_po,
+        ado_api_version=args.ado_api_version,
+        log=lambda m: print("  -> " + m if not m.startswith(("Repository", "Provider")) else m, flush=True))
     print(f"\n✓ HTML erzeugt: {res['output']}")
 
 

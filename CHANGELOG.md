@@ -5,6 +5,33 @@ Alle nennenswerten Änderungen an diesem Projekt werden hier dokumentiert.
 Das Format orientiert sich an [Keep a Changelog](https://keepachangelog.com/de/1.1.0/),
 und das Projekt folgt [Semantic Versioning](https://semver.org/lang/de/).
 
+## [2.3.0] – 2026-06-01
+
+### Hinzugefügt
+- **PO-/Delivery-Dashboard** als eigener Top-Level-View (Umschalter „Engineering ↔
+  Product / Delivery"), der Engineering-Daten in PO-Sprache übersetzt:
+  - **Investment-Mix** (Kapazität nach Feature/Bug/Tech-Debt, Donut + Trend)
+  - **Delivery-Throughput** (Work Items mit Code-Aktivität je Zeiteinheit)
+  - **Cycle-Time-Proxy** (Spanne erster→letzter Commit je Work Item, Median + Verteilung)
+  - **Roadmap-Risiko** (Bus-Faktor & Instabilität je Area Path/Epic)
+  - **Rework-Indikator** (Churn-Ratio, Bug-Anteil)
+  - **Prozess-Hygiene / Traceability** (Anteil Commits mit Work-Item-Bezug)
+  - Jede Kennzahl mit Ein-Satz-Erklärung in PO-Sprache.
+- **Azure-DevOps-Work-Item-Anreicherung** über die REST-API (`workitemsbatch`,
+  api-version 7.1, nur stdlib `urllib`): Typ, State, Parent (Epic-Rollup), Area Path,
+  Iteration, Tags. Batch ≤ 200 IDs, `errorPolicy: omit`, Parent-Ketten-Auflösung.
+- **Work-Item-IDs aus Commit-Messages** (`#123`, `AB#123`) — funktioniert auch ohne API.
+- **Graceful Degradation**: volles Dashboard mit ADO + PAT; reduziert ohne PAT bzw. bei
+  GitHub (Conventional-Commit-basiert, mit sichtbarem Hinweis).
+- Self-hosted **Azure DevOps Server** wird erkannt (`/_git/`-Pfad); API-Basis wird aus der
+  Repo-URL abgeleitet. Neue Option `--ado-api-version` (Default 7.1).
+- `--anonymize` pseudonymisiert Contributor-Namen im HTML (DSGVO-freundliches Teilen).
+- `--no-po` deaktiviert das PO-Dashboard.
+
+### Sicherheit
+- Das PAT wird ausschließlich für API-Auth (Basic-Header) verwendet, niemals in die HTML
+  geschrieben und aus Fehlermeldungen herausgehalten (bestehendes Masking beibehalten).
+
 ## [2.2.0] – 2026-06-01
 
 ### Hinzugefügt
@@ -61,6 +88,7 @@ und das Projekt folgt [Semantic Versioning](https://semver.org/lang/de/).
 - Umschaltbare Zeiträume (30 T / 90 T / 180 T / 1 Jahr / Gesamt), clientseitig.
 - Material-3-Expressive-Dark-Design, Chart.js via CDN mit SRI-Hashes.
 
+[2.3.0]: https://github.com/pepperonas/repo2viz/releases/tag/v2.3.0
 [2.2.0]: https://github.com/pepperonas/repo2viz/releases/tag/v2.2.0
 [2.1.0]: https://example.com/repo2viz/releases/tag/v2.1.0
 [2.0.0]: https://example.com/repo2viz/releases/tag/v2.0.0

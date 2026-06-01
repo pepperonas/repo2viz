@@ -5,7 +5,7 @@
 > Repository-Aktivität auf einen Blick — als eigenständige, interaktive HTML-Datei.
 
 <p>
-  <a href="https://github.com/pepperonas/repo2viz/releases"><img alt="Version" src="https://img.shields.io/badge/version-2.2.0-d0bcff"></a>
+  <a href="https://github.com/pepperonas/repo2viz/releases"><img alt="Version" src="https://img.shields.io/badge/version-2.3.0-d0bcff"></a>
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-yellow"></a>
   <a href="https://github.com/pepperonas/repo2viz/releases/latest"><img alt="Downloads" src="https://img.shields.io/github/downloads/pepperonas/repo2viz/total?label=downloads&color=blueviolet"></a>
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white">
@@ -17,6 +17,7 @@
   <img alt="Azure DevOps" src="https://img.shields.io/badge/source-Azure%20DevOps-0078D7?logo=azuredevops&logoColor=white">
   <img alt="Chart.js" src="https://img.shields.io/badge/charts-Chart.js-FF6384?logo=chartdotjs&logoColor=white">
   <img alt="PySide6" src="https://img.shields.io/badge/GUI-PySide6%20%2F%20Qt%206-41CD52?logo=qt&logoColor=white">
+  <img alt="Azure DevOps" src="https://img.shields.io/badge/PO%20Dashboard-Azure%20Work%20Items-0078D7?logo=azuredevops&logoColor=white">
   <img alt="Material Design 3" src="https://img.shields.io/badge/design-Material%203-6750A4?logo=materialdesign&logoColor=white">
   <img alt="Mobile ready" src="https://img.shields.io/badge/mobile-ready-34d399">
   <br>
@@ -66,8 +67,11 @@ python3 repo2viz.py <repo-url> [-o ausgabe.html] [--token TOKEN] [--keep-clone]
 |--------|--------------|
 | `url` | Repository-URL (GitHub oder Azure DevOps) — **erforderlich** |
 | `-o`, `--output` | Ziel-HTML-Datei (Standard: `<repo-name>-activity.html`) |
-| `--token` | Auth-Token / PAT für private Repos |
+| `--token` | Auth-Token / PAT für private Repos (& Azure-DevOps-Work-Item-API) |
 | `--keep-clone` | Temporären Bare-Clone nicht löschen (Debugging) |
+| `--anonymize` | Contributor-Namen im HTML pseudonymisieren (DSGVO) |
+| `--no-po` | PO-/Delivery-Dashboard nicht erzeugen |
+| `--ado-api-version` | Azure-DevOps-REST-api-version (Default `7.1`) |
 | `--version` | Version ausgeben |
 
 ### Beispiele
@@ -133,6 +137,7 @@ etwaigen Fehlermeldungen maskiert.
 | 🕘 **Stoßzeiten** | Radiales 24h-Zifferblatt der Commit-Verteilung über die Tageszeit |
 | ⏱️ **Zeitraum-Umschaltung** | 30 T / 90 T / 180 T / 1 Jahr / Gesamt — clientseitig, sofort |
 | 📱 **Mobile-Ready** | Responsives Layout für Smartphone & Tablet |
+| 📋 **PO-/Delivery-Dashboard** | Eigener View, der Engineering-Daten in PO-Sprache übersetzt — mit Azure-DevOps-Work-Item-Anreicherung ([Details](#po--delivery-dashboard)) |
 | 🔐 **GitHub & Azure DevOps** | Provider-Auto-Erkennung, Token-Auth für private Repos |
 
 ---
@@ -210,6 +215,69 @@ Vorgefertigte Builds für alle Betriebssysteme gibt es in den
 pip install -r requirements-gui.txt   # PySide6
 python3 repo2viz_gui.py
 ```
+
+---
+
+## PO-/Delivery-Dashboard
+
+Neben der Engineering-Sicht gibt es einen zweiten View **„Product / Delivery"** (Umschalter
+oben im Header). Leitprinzip: **übersetzen statt nur darstellen.** Ein Product Owner liest
+keinen Code-Churn — er fragt *„Liefern wir Wert, vorhersagbar, ohne Risiko für die Roadmap?"*
+Jede Kennzahl wird in dieser Sprache beantwortet (mit Ein-Satz-Erklärung im UI).
+
+![PO-/Delivery-Dashboard](screenshots/po-dashboard.png)
+
+<sub>PO-Ansicht im eingeschränkten Modus (GitHub, ohne Work-Item-Metadaten).</sub>
+
+### Module
+
+| Modul | Beantwortet für den PO |
+|-------|------------------------|
+| **Investment-Mix** | Wo ging die Kapazität hin? Anteil nach Feature/Story · Bug · Tech-Debt (Donut + Trend über Zeit). |
+| **Delivery-Throughput** | Wie viele Work Items hatten pro Woche/Monat Code-Aktivität? (Velocity-Trend-Proxy) |
+| **Cycle-Time-Proxy** | Wie lange brauchen Items typischerweise von erster bis letzter Code-Berührung? (Median + Verteilung) |
+| **Roadmap-Risiko** | Welche Area Paths/Epics hängen an einer Person oder sind instabil (viel Nacharbeit)? |
+| **Rework-Indikator** | Wie viel ist Nacharbeit statt Neubau? (Churn-Ratio, Bug-Anteil) |
+| **Prozess-Hygiene** | Anteil Commits **ohne** Work-Item-Bezug — Traceability/Datenqualität fürs Reporting. |
+
+### Azure-DevOps-Integration
+
+Der größte Hebel ist die Verknüpfung von Commits mit **Azure DevOps Work Items**:
+
+1. **Immer (ohne API):** Commit-Messages werden auf Work-Item-Referenzen geparst
+   (`#1234` und `AB#1234`) → Mapping Commit → Work-Item-ID rein aus git.
+2. **Mit PAT (Azure DevOps):** Über die REST-API (`workitemsbatch`, api-version 7.1) werden
+   Typ, State, Parent (für **Epic-Rollup**), Area Path, Iteration und Tags nachgeladen
+   (Batch ≤ 200 IDs, robustes Error-Handling, Parent-Ketten-Auflösung).
+
+```bash
+export AZURE_DEVOPS_PAT=xxxxxxxx        # Scope: Work Items (Read)
+python3 repo2viz.py https://dev.azure.com/org/projekt/_git/repo
+```
+
+Das PAT wird **nur** für die API-Authentifizierung verwendet, landet **nie** in der HTML und
+wird aus Fehlermeldungen maskiert. Self-hosted **Azure DevOps Server** wird über den
+`/_git/`-Pfad erkannt; die API-Basis wird aus der Repo-URL abgeleitet (ggf. `--ado-api-version`
+auf `6.0`/`5.0` setzen).
+
+### Graceful Degradation
+
+| Situation | PO-Dashboard |
+|-----------|--------------|
+| **Azure DevOps + PAT** | Voll: angereicherte Work Items (Typ, State, Epic, Area Path). |
+| **Azure DevOps ohne PAT** | Nur aus Commit-Messages geparste IDs — mit Hinweis „PAT für volle Auswertung setzen". |
+| **GitHub** | Provider-unabhängige Teile (Conventional-Commit-basierter Investment-Mix, Rework, Hygiene), klar als eingeschränkt gekennzeichnet. |
+
+Fehlt etwas, stürzt nichts ab — alle Felder werden defensiv behandelt.
+
+### Relevante Optionen
+
+| Option / Env | Beschreibung |
+|--------------|--------------|
+| `AZURE_DEVOPS_PAT` (Env) | PAT für die Work-Item-Anreicherung (auch `AZURE_DEVOPS_TOKEN`, `SYSTEM_ACCESSTOKEN`, `--token`). |
+| `--ado-api-version` | Azure-DevOps-REST-api-version (Default `7.1`; on-prem ggf. `6.0`/`5.0`). |
+| `--anonymize` | Contributor-Namen im HTML pseudonymisieren — sinnvoll, da PO-Dashboards breiter geteilt werden (DSGVO). |
+| `--no-po` | PO-Dashboard nicht erzeugen. |
 
 ---
 
