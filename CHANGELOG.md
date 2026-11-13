@@ -5,6 +5,15 @@ Alle nennenswerten Änderungen an diesem Projekt werden hier dokumentiert.
 Das Format orientiert sich an [Keep a Changelog](https://keepachangelog.com/de/1.1.0/),
 und das Projekt folgt [Semantic Versioning](https://semver.org/lang/de/).
 
+## [Unreleased]
+
+### Behoben
+- Verschiebungen aus einem Ordner heraus (`src/{sub => }/f.py` in `git log --numstat`) wurden als `src//f.py` gezählt — dieselbe Datei erschien so unter zwei Pfaden in Hotspots, Kopplung und Bus-Faktor.
+- Die Test-Begleitungs-Quote zählte Dateien wie `latest.py` oder `contest.py` als Tests: die CamelCase-Suffixe (`FooTest.java`) wurden ohne Groß-/Kleinschreibung verglichen.
+
+### Hinzugefügt
+- Unit-Tests (`tests/`, nur Standardbibliothek) und CI-Workflow `tests.yml` (Linux/macOS/Windows, Python 3.10 + 3.13).
+
 ## [2.5.0] – 2026-06-02
 
 ### Hinzugefügt

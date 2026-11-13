@@ -391,6 +391,21 @@ URL ──▶ Provider erkennen ──▶ git clone --bare (temp) ──▶ git 
 
 ---
 
+## Tests
+
+Die reine Logik (Provider-/Token-Erkennung, Clone-URLs, Work-Item-IDs,
+Commit-Klassifikation, Test-Pfad-Erkennung, `parse_log`-Aggregationen inkl.
+Rework, Kopplung und verwaistem Wissen, PO-Auswertung) ist durch Unit-Tests
+abgedeckt; zwei Integrations-Tests bauen dafür ein Wegwerf-Git-Repo im
+Temp-Verzeichnis. Keine zusätzlichen Abhängigkeiten nötig:
+
+```bash
+python -m unittest discover -s tests -v   # oder: python -m pytest tests
+```
+
+Die CI (`.github/workflows/tests.yml`) fährt die Suite auf Linux, macOS und
+Windows mit Python 3.10 und 3.13.
+
 ## Versionierung
 
 Das Projekt folgt [Semantic Versioning](https://semver.org/lang/de/) (`MAJOR.MINOR.PATCH`).

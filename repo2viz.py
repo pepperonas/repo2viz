@@ -388,7 +388,9 @@ def _month_key(day: int) -> int:
 _TEST_RE = re.compile(
     r"(^|/)(tests?|specs?|__tests__|__mocks__)(/|$)"
     r"|[._-](test|spec)\."
-    r"|(_test|_spec|Test|Spec|Tests)\.[A-Za-z0-9]+$", re.IGNORECASE)
+    # CamelCase-Suffixe (FooTest.java) bewusst case-sensitiv — sonst gelten
+    # latest.py, contest.py usw. als Testdateien.
+    r"|((?i:_test|_spec)|(?-i:Test|Spec|Tests))\.[A-Za-z0-9]+$", re.IGNORECASE)
 
 
 def is_test_path(path: str) -> bool:
@@ -486,6 +488,9 @@ def parse_log(raw: str):
             if "=>" in path:
                 path = re.sub(r"\{[^{}]*=>\s*([^{}]*)\}", r"\1", path)
                 path = path.split("=>")[-1].strip()
+                # "src/{sub => }/f.py" (Verschiebung aus einem Ordner) ergibt
+                # sonst "src//f.py"; "{ => lib}/f.py" einen fuehrenden Slash.
+                path = re.sub(r"/{2,}", "/", path).lstrip("/")
             fc = file_changes[path]
             fc[0] += 1; fc[1] += ins_n; fc[2] += del_n; fc[3].add(a_idx)
             if is_fix:
