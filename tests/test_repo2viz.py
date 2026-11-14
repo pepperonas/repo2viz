@@ -220,23 +220,37 @@ class BuildPoTests(unittest.TestCase):
         self.assertEqual(po["refLabel"], "Issue")
 
 
+def _rmtree(path):
+    """Git legt Objekte schreibgeschuetzt an — Windows verweigert sonst das Loeschen."""
+    import stat
+
+    def onerror(func, p, _exc):
+        os.chmod(p, stat.S_IWRITE)
+        func(p)
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(path, onexc=onerror)
+    else:
+        shutil.rmtree(path, onerror=onerror)
+
+
 @unittest.skipUnless(shutil.which("git"), "git nicht installiert")
 class GitIntegrationTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="repo2viz-test-")
-        self.addCleanup(shutil.rmtree, self.tmp)
+        self.addCleanup(_rmtree, self.tmp)
         self.git("init", "-q")
 
     def git(self, *args, date="2026-01-01T12:00:00+00:00"):
         env = dict(os.environ, GIT_AUTHOR_DATE=date, GIT_COMMITTER_DATE=date,
                    GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
-        subprocess.run(["git", "-c", "user.name=T", "-c", "user.email=t@t", *args],
+        subprocess.run(["git", "-c", "user.name=T", "-c", "user.email=t@t",
+                        "-c", "core.autocrlf=false", *args],
                        cwd=self.tmp, env=env, check=True, capture_output=True)
 
     def write(self, path, text):
         full = os.path.join(self.tmp, path)
         os.makedirs(os.path.dirname(full), exist_ok=True)
-        with open(full, "w") as fh:
+        with open(full, "w", newline="\n") as fh:
             fh.write(text)
 
     def test_log_and_tree(self):

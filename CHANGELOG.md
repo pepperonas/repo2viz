@@ -12,7 +12,7 @@ und das Projekt folgt [Semantic Versioning](https://semver.org/lang/de/).
 - Die Test-Begleitungs-Quote zählte Dateien wie `latest.py` oder `contest.py` als Tests: die CamelCase-Suffixe (`FooTest.java`) wurden ohne Groß-/Kleinschreibung verglichen.
 
 ### Hinzugefügt
-- Unit-Tests (`tests/`, nur Standardbibliothek) und CI-Workflow `tests.yml` (Linux/macOS/Windows, Python 3.10 + 3.13).
+- Unit-Tests (`tests/`, nur Standardbibliothek) und CI-Workflow `tests.yml` (Linux/macOS/Windows, Python 3.11 + 3.13).
 
 ## [2.5.0] – 2026-06-02
 

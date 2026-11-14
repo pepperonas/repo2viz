@@ -404,7 +404,7 @@ python -m unittest discover -s tests -v   # oder: python -m pytest tests
 ```
 
 Die CI (`.github/workflows/tests.yml`) fährt die Suite auf Linux, macOS und
-Windows mit Python 3.10 und 3.13.
+Windows mit Python 3.11 (Mindestversion) und 3.13.
 
 ## Versionierung
 
